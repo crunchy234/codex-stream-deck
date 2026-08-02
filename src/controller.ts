@@ -11,6 +11,10 @@ import { CodexRelayServer, readRelayServerConfig } from "./codex-relay-server.js
 import { CodexMicroRendererBridge } from "./codex-micro-renderer-bridge.js";
 import { getOrCreateHostIdentity } from "./host-identity.js";
 import type { OfficialKeycapId } from "./keycaps.js";
+import {
+  startMacosShortcut, stopMacosShortcut, validateMacosShortcut,
+  type MacosShortcut, type MacosShortcutHandle, type MacosModifier
+} from "./macos-shortcut.js";
 import { HostActivityIndex, type HostSnapshot, type RelayCommand } from "./relay-protocol.js";
 import {
   renderAgentKey, renderBuiltinKeycap, renderFallbackKeycap, renderHostTargetKey, renderImportedKeycap,
@@ -36,17 +40,10 @@ type ActionIdentity = { id: string };
 type ContextRingSettings = { showContextRings?: boolean };
 
 export type LongPressMode = "off" | "codex-transcription" | "macos-shortcut";
-export type MacosShortcutModifier =
-  | "left-option" | "right-option" | "left-command" | "right-command"
-  | "left-control" | "right-control" | "left-shift" | "right-shift";
-export type MacosShortcut = { keyCode?: number; modifiers?: MacosShortcutModifier[] };
+export type MacosShortcutModifier = MacosModifier;
+export type { MacosShortcut } from "./macos-shortcut.js";
 export type LongPressSettings = { mode?: LongPressMode; shortcut?: MacosShortcut };
 type ResolvedLongPressSettings = { mode: LongPressMode; shortcut?: MacosShortcut };
-
-const LONG_PRESS_MODIFIERS = new Set<MacosShortcutModifier>([
-  "left-option", "right-option", "left-command", "right-command",
-  "left-control", "right-control", "left-shift", "right-shift"
-]);
 
 /** Discards malformed persisted settings before they can reach an input backend. */
 export function normalizeLongPressSettings(settings: LongPressSettings | undefined): ResolvedLongPressSettings {
@@ -55,21 +52,18 @@ export function normalizeLongPressSettings(settings: LongPressSettings | undefin
   if (mode !== "macos-shortcut") return { mode: "codex-transcription" };
   const shortcut = settings?.shortcut;
   if (!shortcut || typeof shortcut !== "object") return { mode: "off" };
-  const keyCode = shortcut.keyCode;
-  const modifiers = shortcut.modifiers;
-  if (keyCode != null && (!Number.isInteger(keyCode) || keyCode < 0 || keyCode > 127)) return { mode: "off" };
-  if (modifiers != null && (!Array.isArray(modifiers) || modifiers.some((modifier) => !LONG_PRESS_MODIFIERS.has(modifier)))) {
+  try {
+    const validated = validateMacosShortcut(shortcut);
+    return {
+      mode,
+      shortcut: {
+        ...(validated.keyCode == null ? {} : { keyCode: validated.keyCode }),
+        ...(validated.modifiers.length ? { modifiers: validated.modifiers } : {})
+      }
+    };
+  } catch {
     return { mode: "off" };
   }
-  const uniqueModifiers = modifiers ? [...new Set(modifiers)] : undefined;
-  if (keyCode == null && (!uniqueModifiers || uniqueModifiers.length === 0)) return { mode: "off" };
-  return {
-    mode,
-    shortcut: {
-      ...(keyCode == null ? {} : { keyCode }),
-      ...(uniqueModifiers?.length ? { modifiers: uniqueModifiers } : {})
-    }
-  };
 }
 
 export type AgentPressOwner = RoutedAgentSlot;
@@ -85,7 +79,8 @@ type AgentPress = {
   owner: RoutedAgentSlot;
   startedAt: number;
   released: boolean;
-  transcriptionStarted: boolean;
+  holdStarted: boolean;
+  holdMode?: "codex-transcription" | "macos-shortcut";
   timer?: NodeJS.Timeout;
   selection: Promise<void>;
   /** Only the dispatched transcription down-edge, never its preceding selection. */
@@ -99,6 +94,7 @@ type AgentPressTransport = {
   settings(): ResolvedLongPressSettings;
   select(owner: RoutedAgentSlot): Promise<void>;
   transcription(owner: RoutedAgentSlot, act: 0 | 1): Promise<void>;
+  macosShortcut?(owner: RoutedAgentSlot, act: 0 | 1): Promise<boolean>;
   reportError(error: unknown): void;
 };
 
@@ -138,7 +134,7 @@ export class AgentPressMachine {
     this.generations.set(actionId, generation);
     let selection!: Promise<void>;
     const press: AgentPress = {
-      actionId, generation, owner, startedAt: this.clock.now(), released: false, transcriptionStarted: false, selection
+      actionId, generation, owner, startedAt: this.clock.now(), released: false, holdStarted: false, selection
     };
     this.presses.set(actionId, press);
     press.timer = this.clock.setTimeout(() => { void this.beginTranscription(press); }, LONG_PRESS_THRESHOLD_MS);
@@ -193,18 +189,25 @@ export class AgentPressMachine {
   }
 
   private async beginTranscription(press: AgentPress): Promise<void> {
-    if (!this.isCurrent(press) || press.released || this.activeHold || this.transport.settings().mode !== "codex-transcription") return;
+    if (!this.isCurrent(press) || press.released || this.activeHold) return;
     try { await this.startTranscription(press); }
     catch (error) { this.transport.reportError(error); }
   }
 
   private async startTranscription(press: AgentPress): Promise<void> {
     await press.selection;
-    if (!this.isCurrent(press) || press.released || this.activeHold || this.transport.settings().mode !== "codex-transcription") return;
+    const settings = this.transport.settings();
+    if (!this.isCurrent(press) || press.released || this.activeHold
+      || (settings.mode !== "codex-transcription" && settings.mode !== "macos-shortcut")) return;
     this.activeHold = press.actionId;
     let downEdge: Promise<void>;
+    let started = true;
     try {
-      downEdge = Promise.resolve(this.transport.transcription(press.owner, 1));
+      downEdge = (settings.mode === "codex-transcription")
+        ? Promise.resolve(this.transport.transcription(press.owner, 1))
+        : (this.transport.macosShortcut
+          ? Promise.resolve(this.transport.macosShortcut(press.owner, 1)).then((result) => { started = result; })
+          : Promise.resolve().then(() => { started = false; }));
     } catch (error) {
       if (this.activeHold === press.actionId) this.activeHold = undefined;
       throw error;
@@ -215,7 +218,12 @@ export class AgentPressMachine {
       if (this.activeHold === press.actionId) this.activeHold = undefined;
       throw error;
     }
-    press.transcriptionStarted = true;
+    if (!started) {
+      if (this.activeHold === press.actionId) this.activeHold = undefined;
+      return;
+    }
+    press.holdStarted = true;
+    press.holdMode = settings.mode;
     if (press.released || !this.isCurrent(press)) {
       await this.requestRelease(press);
       return;
@@ -230,9 +238,14 @@ export class AgentPressMachine {
   }
 
   private async releaseTranscription(press: AgentPress): Promise<void> {
-    if (!press.transcriptionStarted) return;
-    press.transcriptionStarted = false;
-    try { await this.transport.transcription(press.owner, 0); }
+    if (!press.holdStarted || !press.holdMode) return;
+    const mode = press.holdMode;
+    press.holdStarted = false;
+    press.holdMode = undefined;
+    try {
+      if (mode === "codex-transcription") await this.transport.transcription(press.owner, 0);
+      else await this.transport.macosShortcut?.(press.owner, 0);
+    }
     finally { if (this.activeHold === press.actionId) this.activeHold = undefined; }
   }
 
@@ -244,7 +257,7 @@ export class AgentPressMachine {
   private requestRelease(press: AgentPress): Promise<void> {
     if (press.release) return press.release;
     const release = (async () => {
-      if (press.start && !press.transcriptionStarted) {
+      if (press.start && !press.holdStarted) {
         try { await press.start; }
         catch { return; /* beginTranscription reports the down-edge failure. */ }
       }
@@ -290,6 +303,7 @@ export class DeckController {
     transcription: (owner, act) => this.sendToPinnedOwner(owner.host, {
       kind: "agent", slot: owner.sourceSlot, threadKey: owner.threadKey!, act
     }),
+    macosShortcut: (owner, act) => this.sendMacosShortcut(owner, act),
     reportError: (error) => streamDeck.logger.error(`Agent long-press failed: ${String(error)}`)
   });
   private readonly activityIndex = new HostActivityIndex();
@@ -317,6 +331,7 @@ export class DeckController {
   private lastHostHealthSignature = "";
   private showContextRings = true;
   private longPressSettings: ResolvedLongPressSettings = normalizeLongPressSettings(undefined);
+  private macosShortcutHandle?: MacosShortcutHandle;
 
   async start(): Promise<void> {
     this.stopped = false;
@@ -417,6 +432,13 @@ export class DeckController {
     } catch (error) {
       streamDeck.logger.error(`Agent long-press cleanup failed: ${String(error)}`);
     }
+    if (this.macosShortcutHandle) {
+      try {
+        await this.stopMacosShortcut();
+      } catch (error) {
+        streamDeck.logger.error(`macOS shortcut cleanup failed: ${String(error)}`);
+      }
+    }
     this.relayClient?.close();
     void this.mobileRelayServer?.close();
     void this.localMobileRelayServer?.close();
@@ -444,6 +466,29 @@ export class DeckController {
     if (JSON.stringify(next) === JSON.stringify(this.longPressSettings)) return;
     this.longPressSettings = next;
     this.agentPresses.updateSettings();
+  }
+
+  /**
+   * Custom holds are deliberately local: selecting a remote task remains a
+   * normal typed relay operation, but it can never carry a shortcut payload.
+   */
+  private async sendMacosShortcut(owner: RoutedAgentSlot, act: 0 | 1): Promise<boolean> {
+    if (!this.localHost || owner.host.hostId !== this.localHost.hostId) return false;
+    if (act === 0) {
+      await this.stopMacosShortcut();
+      return true;
+    }
+    const shortcut = this.longPressSettings.shortcut;
+    if (this.longPressSettings.mode !== "macos-shortcut" || !shortcut) return false;
+    await this.stopMacosShortcut();
+    this.macosShortcutHandle = await startMacosShortcut(shortcut);
+    return true;
+  }
+
+  private async stopMacosShortcut(): Promise<void> {
+    const handle = this.macosShortcutHandle;
+    this.macosShortcutHandle = undefined;
+    await stopMacosShortcut(handle);
   }
 
   async beginAgentPress(actionId: string, slot: number): Promise<void> {
