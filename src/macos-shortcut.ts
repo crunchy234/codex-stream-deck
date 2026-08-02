@@ -94,13 +94,23 @@ export function buildShortcutEventPlan(shortcut: MacosShortcut, phase: ShortcutP
   }
 
   let activeFlags = fullFlags;
+  const activeFlagCounts = new Map<number, number>();
+  for (const modifier of modifiers) {
+    activeFlagCounts.set(modifier.flag, (activeFlagCounts.get(modifier.flag) ?? 0) + 1);
+  }
   const events: MacosShortcutEvent[] = [];
   if (validated.keyCode != null) {
     events.push({ keyCode: validated.keyCode, down: false, flags: activeFlags });
   }
   for (const modifier of [...modifiers].reverse()) {
     events.push({ keyCode: modifier.keyCode, down: false, flags: activeFlags });
-    activeFlags &= ~modifier.flag;
+    const remainingCount = (activeFlagCounts.get(modifier.flag) ?? 1) - 1;
+    if (remainingCount === 0) {
+      activeFlagCounts.delete(modifier.flag);
+      activeFlags &= ~modifier.flag;
+    } else {
+      activeFlagCounts.set(modifier.flag, remainingCount);
+    }
   }
   return events;
 }
@@ -127,7 +137,8 @@ if (phase === 'down') {
 } else {
   if (payload.keyCode !== undefined) post(payload.keyCode, false, flags);
   let activeFlags = flags;
-  [...payload.modifiers].reverse().forEach((code) => { post(code, false, activeFlags); activeFlags &= ~modifierFlags[code]; });
+  const activeFlagCounts = payload.modifiers.reduce((counts, code) => { const flag = modifierFlags[code]; counts[flag] = (counts[flag] || 0) + 1; return counts; }, {});
+  [...payload.modifiers].reverse().forEach((code) => { const flag = modifierFlags[code]; post(code, false, activeFlags); if (--activeFlagCounts[flag] === 0) activeFlags &= ~flag; });
 }`;
 }
 
@@ -142,7 +153,7 @@ const isKeyCode = (code) => Number.isInteger(code) && code >= 0 && code <= 127;
 if (!payload || !Number.isSafeInteger(payload.token) || !Array.isArray(payload.modifiers) || !payload.modifiers.every((code) => Object.prototype.hasOwnProperty.call(modifierFlags, code)) || (payload.keyCode !== undefined && !isKeyCode(payload.keyCode))) throw new Error('Invalid numeric shortcut payload.');
 const flags = payload.modifiers.reduce((value, code) => value | modifierFlags[code], 0);
 const post = (code, down, eventFlags) => { const event = $.CGEventCreateKeyboardEvent(null, code, down); $.CGEventSetFlags(event, eventFlags); $.CGEventPost($.kCGHIDEventTap, event); };
-const release = () => { if (payload.keyCode !== undefined) post(payload.keyCode, false, flags); let activeFlags = flags; [...payload.modifiers].reverse().forEach((code) => { post(code, false, activeFlags); activeFlags &= ~modifierFlags[code]; }); };
+const release = () => { if (payload.keyCode !== undefined) post(payload.keyCode, false, flags); let activeFlags = flags; const activeFlagCounts = payload.modifiers.reduce((counts, code) => { const flag = modifierFlags[code]; counts[flag] = (counts[flag] || 0) + 1; return counts; }, {}); [...payload.modifiers].reverse().forEach((code) => { const flag = modifierFlags[code]; post(code, false, activeFlags); if (--activeFlagCounts[flag] === 0) activeFlags &= ~flag; }); };
 let activeFlags = 0;
 payload.modifiers.forEach((code) => { activeFlags |= modifierFlags[code]; post(code, true, activeFlags); });
 if (payload.keyCode !== undefined) post(payload.keyCode, true, flags);

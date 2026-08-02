@@ -55,6 +55,24 @@ test("sets Option flags on both events for a modifier-only Right Option shortcut
   ]);
 });
 
+test("keeps the Option flag through both side-specific Option releases", () => {
+  const shortcut: { keyCode: number; modifiers: ("left-option" | "right-option")[] } = {
+    keyCode: 49,
+    modifiers: ["left-option", "right-option"]
+  };
+
+  assert.deepEqual(buildShortcutEventPlan(shortcut, "down"), [
+    { keyCode: 58, down: true, flags: 524_288 },
+    { keyCode: 61, down: true, flags: 524_288 },
+    { keyCode: 49, down: true, flags: 524_288 }
+  ]);
+  assert.deepEqual(buildShortcutEventPlan(shortcut, "up"), [
+    { keyCode: 49, down: false, flags: 524_288 },
+    { keyCode: 61, down: false, flags: 524_288 },
+    { keyCode: 58, down: false, flags: 524_288 }
+  ]);
+});
+
 test("returns one shared in-flight stop promise to concurrent callers", async () => {
   let releaseStopFile: (() => void) | undefined;
   let writes = 0;
