@@ -90,6 +90,8 @@ type AgentPress = {
   selection: Promise<void>;
   /** Only the dispatched transcription down-edge, never its preceding selection. */
   start?: Promise<void>;
+  /** The sole release pipeline for this press, including a pending down-edge. */
+  release?: Promise<void>;
 };
 
 type AgentPressTransport = {
@@ -114,6 +116,8 @@ const systemAgentPressClock: AgentPressClock = {
 export class AgentPressMachine {
   private readonly presses = new Map<string, AgentPress>();
   private readonly generations = new Map<string, number>();
+  /** Releases survive removal from `presses` so controller shutdown can await them. */
+  private readonly pendingReleases = new Set<Promise<void>>();
   private activeHold?: string;
   private readonly clock: AgentPressClock;
 
@@ -148,13 +152,7 @@ export class AgentPressMachine {
     press.released = true;
     this.presses.delete(actionId);
     if (press.timer) this.clock.clearTimeout(press.timer);
-    if (press.start && !press.transcriptionStarted) {
-      try { await press.start; }
-      catch { /* beginTranscription reports the down-edge failure. */ }
-      await this.releaseTranscription(press);
-      return;
-    }
-    await this.releaseTranscription(press);
+    await this.requestRelease(press);
   }
 
   async cancel(actionId: string): Promise<void> {
@@ -163,6 +161,7 @@ export class AgentPressMachine {
 
   async stop(): Promise<void> {
     await Promise.all([...this.presses.keys()].map((actionId) => this.up(actionId)));
+    while (this.pendingReleases.size > 0) await Promise.all([...this.pendingReleases]);
   }
 
   updateSettings(): void {
@@ -170,9 +169,7 @@ export class AgentPressMachine {
       press.released = true;
       if (press.timer) this.clock.clearTimeout(press.timer);
       this.presses.delete(press.actionId);
-      if (press.start && !press.transcriptionStarted) {
-        void press.start.then(() => this.releaseTranscription(press)).catch((error) => this.transport.reportError(error));
-      } else void this.releaseTranscription(press).catch((error) => this.transport.reportError(error));
+      void this.requestRelease(press).catch((error) => this.transport.reportError(error));
     }
   }
 
@@ -201,7 +198,7 @@ export class AgentPressMachine {
     }
     press.transcriptionStarted = true;
     if (press.released || !this.isCurrent(press)) {
-      await this.releaseTranscription(press);
+      await this.requestRelease(press);
       return;
     }
     press.timer = this.clock.setTimeout(() => {
@@ -218,6 +215,29 @@ export class AgentPressMachine {
     press.transcriptionStarted = false;
     try { await this.transport.transcription(press.owner, 0); }
     finally { if (this.activeHold === press.actionId) this.activeHold = undefined; }
+  }
+
+  /**
+   * Coalesce every release path so that an in-flight down-edge finishes before
+   * exactly one matching up-edge. This promise remains observable after the
+   * press has been deleted from the physical-key map.
+   */
+  private requestRelease(press: AgentPress): Promise<void> {
+    if (press.release) return press.release;
+    const release = (async () => {
+      if (press.start && !press.transcriptionStarted) {
+        try { await press.start; }
+        catch { return; /* beginTranscription reports the down-edge failure. */ }
+      }
+      await this.releaseTranscription(press);
+    })();
+    press.release = release;
+    this.pendingReleases.add(release);
+    void release.then(
+      () => this.pendingReleases.delete(release),
+      () => this.pendingReleases.delete(release)
+    );
+    return release;
   }
 
   private discard(press: AgentPress): void {

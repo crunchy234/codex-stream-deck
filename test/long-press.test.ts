@@ -243,6 +243,81 @@ test("stopping while transcription starts waits for the released hold", async ()
   assert.deepEqual(calls, ["select", "down-start", "down-finish", "up"]);
 });
 
+test("stopping waits for a release already removed from the active press map", async () => {
+  const clock = new FakeClock();
+  const calls: string[] = [];
+  let finishDown!: () => void;
+  const down = new Promise<void>((resolve) => { finishDown = resolve; });
+  const machine = new AgentPressMachine({
+    clock,
+    settings: () => normalizeLongPressSettings(undefined),
+    select: async () => { calls.push("select"); },
+    transcription: async (_assignment, act) => {
+      if (act === 1) {
+        calls.push("down-start");
+        await down;
+        calls.push("down-finish");
+        return;
+      }
+      calls.push("up");
+    },
+    reportError: () => undefined
+  });
+
+  await machine.down("action-a", owner);
+  clock.advance(450);
+  await settle();
+  const releasing = machine.up("action-a");
+  const controller = {
+    stopped: false,
+    agentPresses: machine,
+    relayClient: { close: () => calls.push("relay-close") },
+    mobileRelayServer: undefined,
+    localMobileRelayServer: undefined,
+    microBridge: { close: () => calls.push("bridge-close") }
+  };
+  const stopping = (DeckController.prototype.stop as unknown as (this: typeof controller) => Promise<void>).call(controller);
+  await settle();
+  assert.deepEqual(calls, ["select", "down-start"]);
+  finishDown();
+  await Promise.all([releasing, stopping]);
+  assert.deepEqual(calls, ["select", "down-start", "down-finish", "up", "relay-close", "bridge-close"]);
+});
+
+test("stopping also waits for a settings-triggered release", async () => {
+  const clock = new FakeClock();
+  const calls: string[] = [];
+  let finishDown!: () => void;
+  const down = new Promise<void>((resolve) => { finishDown = resolve; });
+  const machine = new AgentPressMachine({
+    clock,
+    settings: () => normalizeLongPressSettings(undefined),
+    select: async () => undefined,
+    transcription: async (_assignment, act) => {
+      if (act === 1) {
+        calls.push("down-start");
+        await down;
+        calls.push("down-finish");
+        return;
+      }
+      calls.push("up");
+    },
+    reportError: () => undefined
+  });
+
+  await machine.down("action-a", owner);
+  clock.advance(450);
+  await settle();
+  machine.updateSettings();
+  let stopped = false;
+  const stopping = machine.stop().then(() => { stopped = true; });
+  await settle();
+  assert.equal(stopped, false);
+  finishDown();
+  await stopping;
+  assert.deepEqual(calls, ["down-start", "down-finish", "up"]);
+});
+
 test("controller shutdown releases agent presses before closing transports", async () => {
   const events: string[] = [];
   let finishCleanup!: () => void;
