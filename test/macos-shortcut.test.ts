@@ -39,8 +39,8 @@ test("posts every modifier with cumulative flags and unwinds them in reverse", (
   ]);
   assert.deepEqual(buildShortcutEventPlan(shortcut, "up"), [
     { keyCode: 49, down: false, flags: 1_572_864 },
-    { keyCode: 61, down: false, flags: 1_572_864 },
-    { keyCode: 55, down: false, flags: 1_048_576 }
+    { keyCode: 61, down: false, flags: 1_048_576 },
+    { keyCode: 55, down: false, flags: 0 }
   ]);
 });
 
@@ -51,7 +51,7 @@ test("sets Option flags on both events for a modifier-only Right Option shortcut
     { keyCode: 61, down: true, flags: 524_288 }
   ]);
   assert.deepEqual(buildShortcutEventPlan(shortcut, "up"), [
-    { keyCode: 61, down: false, flags: 524_288 }
+    { keyCode: 61, down: false, flags: 0 }
   ]);
 });
 
@@ -69,8 +69,39 @@ test("keeps the Option flag through both side-specific Option releases", () => {
   assert.deepEqual(buildShortcutEventPlan(shortcut, "up"), [
     { keyCode: 49, down: false, flags: 524_288 },
     { keyCode: 61, down: false, flags: 524_288 },
-    { keyCode: 58, down: false, flags: 524_288 }
+    { keyCode: 58, down: false, flags: 0 }
   ]);
+});
+
+test("clears each modifier flag before posting that modifier's key-up", async () => {
+  const shortcut: { keyCode: number; modifiers: ("left-command" | "right-option")[] } = {
+    keyCode: 49,
+    modifiers: ["left-command", "right-option"]
+  };
+
+  assert.deepEqual(buildShortcutEventPlan(shortcut, "up"), [
+    { keyCode: 49, down: false, flags: 1_572_864 },
+    { keyCode: 61, down: false, flags: 1_048_576 },
+    { keyCode: 55, down: false, flags: 0 }
+  ]);
+
+  const oneShot = buildShortcutJxa(shortcut, "up");
+  assert.match(
+    oneShot,
+    /if \(--activeFlagCounts\[flag\] === 0\) activeFlags &= ~flag; post\(code, false, activeFlags\);/
+  );
+
+  const source = await import("node:fs/promises").then(({ readFile }) =>
+    readFile(new URL("../src/macos-shortcut.ts", import.meta.url), "utf8")
+  );
+  const heldHelper = source.slice(
+    source.indexOf("function buildHeldShortcutJxa"),
+    source.indexOf("function numericPayload")
+  );
+  assert.match(
+    heldHelper,
+    /if \(--activeFlagCounts\[flag\] === 0\) activeFlags &= ~flag; post\(code, false, activeFlags\);/
+  );
 });
 
 test("returns one shared in-flight stop promise to concurrent callers", async () => {
