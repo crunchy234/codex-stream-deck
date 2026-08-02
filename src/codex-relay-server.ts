@@ -11,7 +11,7 @@ import {
   type RelayAuthMessage, type RelayCommand, type RelayCommandMessage, type RelayHealthMessage,
   type RelayResultMessage, type RelaySnapshotMessage
 } from "./relay-protocol.js";
-import type { CodexHost } from "./types.js";
+import type { CodexHost, MicroActionSlot } from "./types.js";
 
 export type RelayServerConfig = {
   enabled: boolean;
@@ -28,7 +28,10 @@ export type RelayServerConfig = {
 };
 
 type RelayControl = Pick<CodexMicroRendererBridge,
-  "refresh" | "sendAgent" | "sendAction" | "sendJoystick" | "sendEncoder" | "adjustReasoning" | "runKeycap" | "consumeRateLimitReset">;
+  "refresh" | "selectThread" | "sendAgent" | "sendAction" | "sendJoystick" | "sendEncoder" | "adjustReasoning" | "runKeycap" | "consumeRateLimitReset">;
+
+type HeldAction = { timer: NodeJS.Timeout };
+const HELD_ACTION_TIMEOUT_MS = 60_000;
 
 export class CodexRelayServer {
   private server?: WebSocketServer;
@@ -39,6 +42,7 @@ export class CodexRelayServer {
   private poll?: NodeJS.Timeout;
   private snapshotInFlight?: Promise<RelaySnapshotMessage>;
   private readonly authenticated = new Set<WebSocket>();
+  private readonly heldActions = new Map<WebSocket, Map<MicroActionSlot, HeldAction>>();
   private lastSnapshotError = "";
   private lastSnapshotErrorAt = 0;
   private degraded = false;
@@ -156,6 +160,7 @@ export class CodexRelayServer {
     }));
     const server = this.server;
     this.server = undefined;
+    await Promise.all([...this.heldActions.keys()].map((socket) => this.releaseHeldActions(socket)));
     for (const socket of server?.clients ?? []) socket.terminate();
     this.authenticated.clear();
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -182,8 +187,12 @@ export class CodexRelayServer {
       socket.on("message", (message) => {
         void this.handleMessage(socket, message.toString()).catch((error) => this.reportSnapshotError(error));
       });
-      socket.on("close", () => this.authenticated.delete(socket));
-      socket.on("error", () => this.authenticated.delete(socket));
+      const release = () => {
+        this.authenticated.delete(socket);
+        void this.releaseHeldActions(socket);
+      };
+      socket.on("close", release);
+      socket.on("error", release);
       void this.publishSnapshot(socket).catch((error) => this.handleSnapshotFailure(error, socket));
     });
     socket.on("close", () => clearTimeout(authTimer));
@@ -202,12 +211,23 @@ export class CodexRelayServer {
       ? `agent:${command.slot + 1}:${command.act === 1 ? "down" : "up"}`
       : command.kind;
     this.log(`Relay command ${commandLabel} received.`);
+    if (command.kind === "action" && command.act === 0 && this.actionHeldByAnotherSocket(socket, command.slot)) {
+      this.sendResult(socket, message.requestId, true);
+      return;
+    }
+    const heldAction = command.kind === "action" && command.act === 1
+      ? this.trackHeldAction(socket, command.slot)
+      : undefined;
     try {
       await executeRelayCommand(this.control, command);
+      if (command.kind === "action") {
+        if (command.act === 0) this.clearHeldAction(socket, command.slot);
+      }
       this.sendResult(socket, message.requestId, true);
       this.log(`Relay command ${commandLabel} completed in ${Date.now() - startedAt} ms.`);
       await this.publishSnapshot();
     } catch (error) {
+      if (heldAction) this.clearHeldAction(socket, heldAction);
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.log(`Relay command ${commandLabel} failed in ${Date.now() - startedAt} ms: ${errorMessage}`);
       this.sendResult(socket, message.requestId, false, errorMessage);
@@ -218,6 +238,48 @@ export class CodexRelayServer {
     if (socket.readyState !== WebSocket.OPEN) return;
     const result: RelayResultMessage = { type: "result", protocol: RELAY_PROTOCOL_VERSION, requestId, ok, ...(error ? { error } : {}) };
     socket.send(JSON.stringify(result));
+  }
+
+  async releaseHeldActions(socket: WebSocket): Promise<void> {
+    const slots = [...(this.heldActions.get(socket)?.keys() ?? [])];
+    await Promise.all(slots.map(async (slot) => {
+      try { await this.releaseHeldAction(socket, slot); }
+      catch (error) { this.log(`Relay held action ${slot} release failed: ${String(error)}`); }
+    }));
+  }
+
+  private trackHeldAction(socket: WebSocket, slot: MicroActionSlot): MicroActionSlot {
+    this.clearHeldAction(socket, slot);
+    const held: HeldAction = { timer: setTimeout(() => {
+      void this.releaseHeldAction(socket, slot).catch((error) =>
+        this.log(`Relay held action ${slot} release failed: ${String(error)}`));
+    }, HELD_ACTION_TIMEOUT_MS) };
+    held.timer.unref();
+    const bySlot = this.heldActions.get(socket) ?? new Map<MicroActionSlot, HeldAction>();
+    bySlot.set(slot, held);
+    this.heldActions.set(socket, bySlot);
+    return slot;
+  }
+
+  private actionHeldByAnotherSocket(socket: WebSocket, slot: MicroActionSlot): boolean {
+    return [...this.heldActions.entries()].some(([owner, bySlot]) => owner !== socket && bySlot.has(slot));
+  }
+
+  private clearHeldAction(socket: WebSocket, slot: MicroActionSlot): void {
+    const bySlot = this.heldActions.get(socket);
+    const held = bySlot?.get(slot);
+    if (!held || !bySlot) return;
+    clearTimeout(held.timer);
+    bySlot.delete(slot);
+    if (bySlot.size === 0) this.heldActions.delete(socket);
+  }
+
+  private async releaseHeldAction(socket: WebSocket, slot: MicroActionSlot): Promise<void> {
+    const bySlot = this.heldActions.get(socket);
+    const held = bySlot?.get(slot);
+    if (!held) return;
+    this.clearHeldAction(socket, slot);
+    await this.control.sendAction(slot, 0);
   }
 
   private scheduleSnapshot(delay = 1_200): void {
@@ -349,6 +411,7 @@ export function relayDiscoveryTxt(
 
 async function executeRelayCommand(control: RelayControl, command: RelayCommand): Promise<void> {
   if (command.kind === "agent") return control.sendAgent(command.slot, command.act, command.threadKey);
+  if (command.kind === "select-thread") return control.selectThread(command.threadKey);
   if (command.kind === "action") return control.sendAction(command.slot, command.act);
   if (command.kind === "joystick") return control.sendJoystick(command.direction, command.distance);
   if (command.kind === "encoder") return control.sendEncoder(command.act);

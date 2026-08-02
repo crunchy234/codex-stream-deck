@@ -128,6 +128,7 @@ export class DeckController {
           },
           sendAgent: (slot: number, act: 0 | 1, threadKey?: string) => runAndInvalidate(
             () => this.microBridge.sendAgent(slot, act, threadKey)),
+          selectThread: (threadKey: string) => runAndInvalidate(() => this.microBridge.selectThread(threadKey)),
           sendAction: (slot: MicroActionSlot, act: 0 | 1) => runAndInvalidate(
             () => this.microBridge.sendAction(slot, act)),
           sendJoystick: (direction: MicroDirection, distance: 0 | 1) => runAndInvalidate(
@@ -294,9 +295,9 @@ export class DeckController {
     if (act === 1) this.pressedAgents.set(slot, assignment);
     else this.pressedAgents.delete(slot);
     if (!assignment.threadKey) throw new Error("The selected Codex task has no stable thread identity.");
-    if (assignment.host.hostId === this.localHost?.hostId) {
-      await this.microBridge.sendAgent(assignment.sourceSlot, act, assignment.threadKey);
-    } else await this.sendRemote({ kind: "agent", slot: assignment.sourceSlot, threadKey: assignment.threadKey, act });
+    await this.sendToPinnedOwner(assignment.host, {
+      kind: "agent", slot: assignment.sourceSlot, threadKey: assignment.threadKey, act
+    });
     if (act === 0) void this.refresh();
   }
 
@@ -536,6 +537,25 @@ export class DeckController {
   private async sendRemote(command: RelayCommand): Promise<void> {
     if (!this.relayClient) throw new Error("Remote Codex relay is not configured.");
     await this.relayClient.send(command);
+  }
+
+  private async sendToPinnedOwner(owner: CodexHost, command: RelayCommand): Promise<void> {
+    if (owner.hostId === this.localHost?.hostId) return this.dispatchLocal(command);
+    if (this.relayClient?.currentHost()?.hostId !== owner.hostId) {
+      throw new Error("The task-owning Codex host is no longer connected.");
+    }
+    await this.relayClient.send(command);
+  }
+
+  private async dispatchLocal(command: RelayCommand): Promise<void> {
+    if (command.kind === "agent") return this.microBridge.sendAgent(command.slot, command.act, command.threadKey);
+    if (command.kind === "select-thread") return this.microBridge.selectThread(command.threadKey);
+    if (command.kind === "action") return this.microBridge.sendAction(command.slot, command.act);
+    if (command.kind === "joystick") return this.microBridge.sendJoystick(command.direction, command.distance);
+    if (command.kind === "encoder") return this.microBridge.sendEncoder(command.act);
+    if (command.kind === "reasoning") return this.microBridge.adjustReasoning(command.direction);
+    if (command.kind === "rate-limit-reset") return this.microBridge.consumeRateLimitReset();
+    return this.microBridge.runKeycap(command.keycapId);
   }
 
   private async sendToTarget(command: RelayCommand, local: () => Promise<void>): Promise<void> {

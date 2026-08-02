@@ -7,6 +7,7 @@ export const RELAY_PROTOCOL_VERSION = 1;
 
 export type RelayCommand =
   | { kind: "agent"; slot: number; threadKey: string; act: 0 | 1 }
+  | { kind: "select-thread"; threadKey: string }
   | { kind: "action"; slot: MicroActionSlot; act: 0 | 1 }
   | { kind: "joystick"; direction: MicroDirection; distance: 0 | 1 }
   | { kind: "encoder"; act: 0 | 1 }
@@ -16,7 +17,7 @@ export type RelayCommand =
 
 export type RelayAuthMessage = { type: "auth"; protocol: 1; token: string };
 export const RELAY_CAPABILITIES = [
-  "agent", "action", "joystick", "encoder", "reasoning", "keycap", "usage", "rate-limit-reset"
+  "agent", "select-thread", "action", "joystick", "encoder", "reasoning", "keycap", "usage", "rate-limit-reset"
 ] as const;
 export type RelayReadyMessage = {
   type: "ready";
@@ -253,6 +254,7 @@ export function parseRelayServerMessage(value: unknown): RelayServerMessage | nu
 export function parseRelayCommand(value: unknown): RelayCommand | null {
   if (!isRecord(value) || typeof value.kind !== "string") return null;
   if (value.kind === "agent" && integerIn(value.slot, 0, 5) && isThreadKey(value.threadKey) && binary(value.act)) return value as RelayCommand;
+  if (value.kind === "select-thread" && isThreadKey(value.threadKey)) return value as RelayCommand;
   if (value.kind === "action" && ["ACT06", "ACT07", "ACT08", "ACT09", "ACT10_ACT11", "ACT12"].includes(String(value.slot)) && binary(value.act)) return value as RelayCommand;
   if (value.kind === "joystick" && ["up", "right", "down", "left"].includes(String(value.direction)) && binary(value.distance)) return value as RelayCommand;
   if (value.kind === "encoder" && binary(value.act)) return value as RelayCommand;

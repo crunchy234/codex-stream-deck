@@ -368,8 +368,18 @@ export class CodexMicroRendererBridge {
       if (act === 0) return;
       this.log(`Task ${plan.threadKey} is outside this host's six native Micro slots; opening its exact thread identity.`);
     }
-    await this.ensureThreadActivated(plan.threadKey);
-    this.sessionOwnership.markOpened(plan.threadKey);
+    await this.activateThread(plan.threadKey);
+  }
+
+  async selectThread(threadKey: string): Promise<void> {
+    try { await focusCodexWindow(); }
+    catch (error) { this.log(`Codex window focus was unavailable: ${String(error)}`); }
+    await this.activateThread(threadKey);
+  }
+
+  private async activateThread(threadKey: string): Promise<void> {
+    await this.ensureThreadActivated(threadKey);
+    this.sessionOwnership.markOpened(threadKey);
   }
 
   private async ensureThreadActivated(threadKey: string): Promise<void> {

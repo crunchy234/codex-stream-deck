@@ -110,6 +110,7 @@ test("optional mobile relay config is absent-safe and validates before startup",
 test("relay command parser permits only the narrow native command surface", () => {
   const threadKey = "00000000-0000-4000-8000-000000000005";
   assert.deepEqual(parseRelayCommand({ kind: "agent", slot: 5, threadKey, act: 1 }), { kind: "agent", slot: 5, threadKey, act: 1 });
+  assert.deepEqual(parseRelayCommand({ kind: "select-thread", threadKey }), { kind: "select-thread", threadKey });
   assert.deepEqual(parseRelayCommand({ kind: "reasoning", direction: "increase" }), { kind: "reasoning", direction: "increase" });
   assert.deepEqual(parseRelayCommand({ kind: "rate-limit-reset" }), { kind: "rate-limit-reset" });
   assert.equal(parseRelayCommand({ kind: "agent", slot: 6, threadKey, act: 1 }), null);
@@ -119,6 +120,7 @@ test("relay command parser permits only the narrow native command surface", () =
   assert.notEqual(parseRelayCommand({ kind: "agent", slot: 0, threadKey: "client-new-thread:e3c18619-71ff-4a8d-8dd3-d475e9bcf162", act: 1 }), null);
   assert.notEqual(parseRelayCommand({ kind: "agent", slot: 0, threadKey: "local:client-new-thread:e3c18619-71ff-4a8d-8dd3-d475e9bcf162", act: 1 }), null);
   assert.equal(parseRelayCommand({ kind: "agent", slot: 1, threadKey: "local:../../secret", act: 1 }), null);
+  assert.equal(parseRelayCommand({ kind: "select-thread", threadKey: "../../bad" }), null);
 });
 
 test("relay snapshot parser bounds and validates host session catalogs", async () => {
@@ -769,6 +771,7 @@ test("authenticated relay publishes snapshots and dispatches typed commands", as
   const calls: unknown[] = [];
   const control = {
     refresh: async () => snapshot,
+    selectThread: async () => {},
     sendAgent: async (slot: number, act: 0 | 1, threadKey?: string) => { calls.push(["agent", slot, act, threadKey]); },
     sendAction: async () => {}, sendJoystick: async () => {}, sendEncoder: async () => {},
     adjustReasoning: async () => {}, runKeycap: async () => {}, consumeRateLimitReset: async () => {}
@@ -785,7 +788,7 @@ test("authenticated relay publishes snapshots and dispatches typed commands", as
   assert.equal(first.type, "ready");
   assert.equal(first.bridge, "native-codex-micro");
   assert.deepEqual(first.capabilities, [
-    "agent", "action", "joystick", "encoder", "reasoning", "keycap", "usage", "rate-limit-reset"
+    "agent", "select-thread", "action", "joystick", "encoder", "reasoning", "keycap", "usage", "rate-limit-reset"
   ]);
   const second = await messages.next();
   assert.equal(second.type, "snapshot");
@@ -801,10 +804,138 @@ test("authenticated relay publishes snapshots and dispatches typed commands", as
   await server.close();
 });
 
+test("relay selects a thread and releases an owned action when its socket closes", async () => {
+  const port = await freePort();
+  const threadKey = "00000000-0000-4000-8000-000000000002";
+  const calls: unknown[] = [];
+  const control = {
+    refresh: async () => snapshot,
+    selectThread: async (key: string) => { calls.push(["select-thread", key]); },
+    sendAgent: async () => {},
+    sendAction: async (slot: string, act: 0 | 1) => { calls.push(["action", slot, act]); },
+    sendJoystick: async () => {}, sendEncoder: async () => {},
+    adjustReasoning: async () => {}, runKeycap: async () => {}, consumeRateLimitReset: async () => {}
+  };
+  const server = new CodexRelayServer(
+    { enabled: true, listenHost: "127.0.0.1", port, token: "t".repeat(32) }, host, control, () => {}
+  );
+  await server.start();
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  const messages = messageQueue(socket);
+  try {
+    await onceOpen(socket);
+    socket.send(JSON.stringify({ type: "auth", protocol: RELAY_PROTOCOL_VERSION, token: "t".repeat(32) }));
+    await messages.next();
+    await messages.next();
+    socket.send(JSON.stringify({
+      type: "command", protocol: RELAY_PROTOCOL_VERSION, requestId: "select-thread",
+      command: { kind: "select-thread", threadKey }
+    }));
+    assert.equal((await messages.next()).ok, true);
+    await messages.next();
+    socket.send(JSON.stringify({
+      type: "command", protocol: RELAY_PROTOCOL_VERSION, requestId: "hold-action",
+      command: { kind: "action", slot: "ACT10_ACT11", act: 1 }
+    }));
+    assert.equal((await messages.next()).ok, true);
+    assert.deepEqual(calls, [["select-thread", threadKey], ["action", "ACT10_ACT11", 1]]);
+    socket.close();
+    await waitUntil(() => calls.some((call) => JSON.stringify(call) === JSON.stringify(["action", "ACT10_ACT11", 0])));
+    assert.deepEqual(calls, [
+      ["select-thread", threadKey],
+      ["action", "ACT10_ACT11", 1],
+      ["action", "ACT10_ACT11", 0]
+    ]);
+  } finally {
+    socket.terminate();
+    await server.close();
+  }
+});
+
+test("a relay socket cannot release an action held by another socket", async () => {
+  const port = await freePort();
+  const calls: unknown[] = [];
+  const control = {
+    refresh: async () => snapshot, selectThread: async () => {}, sendAgent: async () => {},
+    sendAction: async (slot: string, act: 0 | 1) => { calls.push([slot, act]); },
+    sendJoystick: async () => {}, sendEncoder: async () => {}, adjustReasoning: async () => {},
+    runKeycap: async () => {}, consumeRateLimitReset: async () => {}
+  };
+  const server = new CodexRelayServer(
+    { enabled: true, listenHost: "127.0.0.1", port, token: "t".repeat(32) }, host, control, () => {}
+  );
+  await server.start();
+  const first = new WebSocket(`ws://127.0.0.1:${port}`);
+  const second = new WebSocket(`ws://127.0.0.1:${port}`);
+  const firstMessages = messageQueue(first);
+  const secondMessages = messageQueue(second);
+  try {
+    await Promise.all([onceOpen(first), onceOpen(second)]);
+    for (const [socket, messages] of [[first, firstMessages], [second, secondMessages]] as const) {
+      socket.send(JSON.stringify({ type: "auth", protocol: RELAY_PROTOCOL_VERSION, token: "t".repeat(32) }));
+      await messages.next();
+      await messages.next();
+    }
+    first.send(JSON.stringify({ type: "command", protocol: RELAY_PROTOCOL_VERSION, requestId: "first-down", command: { kind: "action", slot: "ACT10_ACT11", act: 1 } }));
+    assert.equal((await firstMessages.next()).ok, true);
+    await secondMessages.next();
+    second.send(JSON.stringify({ type: "command", protocol: RELAY_PROTOCOL_VERSION, requestId: "second-up", command: { kind: "action", slot: "ACT10_ACT11", act: 0 } }));
+    assert.equal((await secondMessages.next()).ok, true);
+    assert.deepEqual(calls, [["ACT10_ACT11", 1]]);
+    first.close();
+    await waitUntil(() => calls.length === 2);
+    assert.deepEqual(calls, [["ACT10_ACT11", 1], ["ACT10_ACT11", 0]]);
+  } finally {
+    first.terminate();
+    second.terminate();
+    await server.close();
+  }
+});
+
+test("relay releases a held action when its socket closes during action down", async () => {
+  const port = await freePort();
+  const calls: unknown[] = [];
+  let finishDown: (() => void) | undefined;
+  const control = {
+    refresh: async () => snapshot, selectThread: async () => {}, sendAgent: async () => {},
+    sendAction: async (slot: string, act: 0 | 1) => {
+      calls.push([slot, act]);
+      if (act === 1) await new Promise<void>((resolve) => { finishDown = resolve; });
+    },
+    sendJoystick: async () => {}, sendEncoder: async () => {}, adjustReasoning: async () => {},
+    runKeycap: async () => {}, consumeRateLimitReset: async () => {}
+  };
+  const server = new CodexRelayServer(
+    { enabled: true, listenHost: "127.0.0.1", port, token: "t".repeat(32) }, host, control, () => {}
+  );
+  await server.start();
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  const messages = messageQueue(socket);
+  try {
+    await onceOpen(socket);
+    socket.send(JSON.stringify({ type: "auth", protocol: RELAY_PROTOCOL_VERSION, token: "t".repeat(32) }));
+    await messages.next();
+    await messages.next();
+    socket.send(JSON.stringify({ type: "command", protocol: RELAY_PROTOCOL_VERSION, requestId: "pending-down", command: { kind: "action", slot: "ACT10_ACT11", act: 1 } }));
+    await waitUntil(() => finishDown != null);
+    const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    socket.close();
+    await closed;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    finishDown!();
+    await waitUntil(() => calls.length === 2);
+    assert.deepEqual(calls, [["ACT10_ACT11", 1], ["ACT10_ACT11", 0]]);
+  } finally {
+    socket.terminate();
+    await server.close();
+  }
+});
+
 test("running relay publishes refreshed Codex metadata without changing host identity", async () => {
   const port = await freePort();
   const control = {
     refresh: async () => snapshot,
+    selectThread: async () => {},
     sendAgent: async () => {}, sendAction: async () => {}, sendJoystick: async () => {},
     sendEncoder: async () => {}, adjustReasoning: async () => {}, runKeycap: async () => {}, consumeRateLimitReset: async () => {}
   };
@@ -837,6 +968,7 @@ test("relay rejects a client with the wrong token before publishing state", asyn
   let refreshes = 0;
   const control = {
     refresh: async () => { refreshes += 1; return snapshot; },
+    selectThread: async () => {},
     sendAgent: async () => {}, sendAction: async () => {}, sendJoystick: async () => {},
     sendEncoder: async () => {}, adjustReasoning: async () => {}, runKeycap: async () => {}, consumeRateLimitReset: async () => {}
   };
@@ -858,6 +990,7 @@ test("authenticated relay survives an unavailable Codex snapshot", async () => {
   const logs: string[] = [];
   const control = {
     refresh: async (): Promise<MicroSnapshot> => { throw new Error("bridge offline"); },
+    selectThread: async () => {},
     sendAgent: async () => {}, sendAction: async () => {}, sendJoystick: async () => {},
     sendEncoder: async () => {}, adjustReasoning: async () => {}, runKeycap: async () => {}, consumeRateLimitReset: async () => {}
   };
@@ -885,6 +1018,7 @@ test("relay client preserves last-known tasks but marks their host offline after
   const port = await freePort();
   const control = {
     refresh: async () => snapshot,
+    selectThread: async () => {},
     sendAgent: async () => {}, sendAction: async () => {}, sendJoystick: async () => {},
     sendEncoder: async () => {}, adjustReasoning: async () => {}, runKeycap: async () => {}, consumeRateLimitReset: async () => {}
   };

@@ -126,6 +126,12 @@ test("renderer selection prefers an exact host identity and rejects ambiguous UU
   assert.equal(selectSidebarThreadId(threadId, [local, remote]), undefined);
 });
 
+test("renderer bridge exposes direct thread selection with focus and ownership tracking", async () => {
+  const source = await readFile(new URL("../src/codex-micro-renderer-bridge.ts", import.meta.url), "utf8");
+  assert.match(source, /async selectThread\(threadKey: string\): Promise<void> \{[\s\S]*focusCodexWindow\(\)[\s\S]*activateThread\(threadKey\)/);
+  assert.match(source, /private async activateThread\(threadKey: string\): Promise<void> \{[\s\S]*ensureThreadActivated\(threadKey\)[\s\S]*sessionOwnership\.markOpened\(threadKey\)/);
+});
+
 test("reasoning controls use the official native encoder rotation events", async () => {
   assert.deepEqual(REASONING_ENCODER_KEYS, {
     decrease: "ENC_CW",
