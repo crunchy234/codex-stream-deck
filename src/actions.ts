@@ -12,7 +12,6 @@ abstract class AgentAction extends SingletonAction {
   }
 
   override onWillDisappear(ev: WillDisappearEvent): void {
-    void this.controller.cancelAgentPress(ev.action.id);
     this.controller.unregisterAgent(ev.action);
   }
 
