@@ -45,5 +45,5 @@ for (const pluginAction of [
 streamDeck.connect();
 void controller.start().catch((error) => streamDeck.logger.error(`Codex-Verbindung fehlgeschlagen: ${String(error)}`));
 
-process.once("SIGTERM", () => controller.stop());
-process.once("SIGINT", () => controller.stop());
+process.once("SIGTERM", () => { void controller.stop(); });
+process.once("SIGINT", () => { void controller.stop(); });

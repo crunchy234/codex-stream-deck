@@ -148,7 +148,9 @@ export class AgentPressMachine {
     this.presses.delete(actionId);
     if (press.timer) this.clock.clearTimeout(press.timer);
     if (press.start && !press.transcriptionStarted) {
-      void press.start.then(() => this.releaseTranscription(press)).catch((error) => this.transport.reportError(error));
+      try { await press.start; }
+      catch { /* beginTranscription reports the down-edge failure. */ }
+      await this.releaseTranscription(press);
       return;
     }
     await this.releaseTranscription(press);
@@ -184,7 +186,12 @@ export class AgentPressMachine {
     await press.selection;
     if (!this.isCurrent(press) || press.released || this.activeHold || this.transport.settings().mode !== "codex-transcription") return;
     this.activeHold = press.actionId;
-    await this.transport.transcription(press.owner, 1);
+    try {
+      await this.transport.transcription(press.owner, 1);
+    } catch (error) {
+      if (this.activeHold === press.actionId) this.activeHold = undefined;
+      throw error;
+    }
     press.transcriptionStarted = true;
     if (press.released || !this.isCurrent(press)) {
       await this.releaseTranscription(press);
@@ -355,11 +362,15 @@ export class DeckController {
     this.scheduleAnimation();
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopped = true;
-    void this.agentPresses.stop().catch((error) => streamDeck.logger.error(`Agent long-press cleanup failed: ${String(error)}`));
     if (this.poll) clearInterval(this.poll);
     if (this.animation) clearInterval(this.animation);
+    try {
+      await this.agentPresses.stop();
+    } catch (error) {
+      streamDeck.logger.error(`Agent long-press cleanup failed: ${String(error)}`);
+    }
     this.relayClient?.close();
     void this.mobileRelayServer?.close();
     void this.localMobileRelayServer?.close();

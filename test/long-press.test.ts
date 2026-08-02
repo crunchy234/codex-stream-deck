@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  AgentPressMachine, normalizeLongPressSettings,
+  AgentPressMachine, DeckController, normalizeLongPressSettings,
   type AgentPressClock, type AgentPressOwner
 } from "../src/controller.js";
 
@@ -168,6 +168,101 @@ test("a replaced remote host rejects the captured owner instead of rerouting", a
   clock.advance(450);
   await Promise.resolve();
   assert.deepEqual(calls, [["select", owner.host.hostId, owner.threadKey!]]);
+});
+
+test("a rejected transcription down edge releases the global hold for the next press", async () => {
+  const clock = new FakeClock();
+  const calls: Call[] = [];
+  let rejectFirstDown = true;
+  const machine = new AgentPressMachine({
+    clock,
+    settings: () => normalizeLongPressSettings(undefined),
+    select: async (assignment) => { calls.push(["select", assignment.host.hostId, assignment.threadKey!]); },
+    transcription: async (assignment, act) => {
+      if (act === 1 && rejectFirstDown) {
+        rejectFirstDown = false;
+        throw new Error("transcription transport unavailable");
+      }
+      calls.push([act === 1 ? "down" : "up", assignment.host.hostId, assignment.threadKey!]);
+    },
+    reportError: () => undefined
+  });
+
+  await machine.down("action-a", owner);
+  clock.advance(450);
+  await settle();
+  await machine.up("action-a");
+  await machine.down("action-b", { ...owner, id: 1 });
+  clock.advance(450);
+  await settle();
+  await machine.up("action-b");
+
+  assert.deepEqual(calls, [
+    ["select", owner.host.hostId, owner.threadKey!],
+    ["select", owner.host.hostId, owner.threadKey!],
+    ["down", owner.host.hostId, owner.threadKey!],
+    ["up", owner.host.hostId, owner.threadKey!]
+  ]);
+});
+
+test("stopping while transcription starts waits for the released hold", async () => {
+  const clock = new FakeClock();
+  const calls: string[] = [];
+  let finishDown!: () => void;
+  const down = new Promise<void>((resolve) => { finishDown = resolve; });
+  const machine = new AgentPressMachine({
+    clock,
+    settings: () => normalizeLongPressSettings(undefined),
+    select: async () => { calls.push("select"); },
+    transcription: async (_assignment, act) => {
+      if (act === 1) {
+        calls.push("down-start");
+        await down;
+        calls.push("down-finish");
+        return;
+      }
+      calls.push("up");
+    },
+    reportError: () => undefined
+  });
+
+  await machine.down("action-a", owner);
+  clock.advance(450);
+  await settle();
+  let stopped = false;
+  const stopping = machine.stop().then(() => { stopped = true; });
+  await settle();
+  assert.equal(stopped, false);
+  finishDown();
+  await stopping;
+  assert.deepEqual(calls, ["select", "down-start", "down-finish", "up"]);
+});
+
+test("controller shutdown releases agent presses before closing transports", async () => {
+  const events: string[] = [];
+  let finishCleanup!: () => void;
+  const cleanup = new Promise<void>((resolve) => { finishCleanup = resolve; });
+  const controller = {
+    stopped: false,
+    agentPresses: {
+      stop: async () => {
+        events.push("agent-cleanup-start");
+        await cleanup;
+        events.push("agent-cleanup-finish");
+      }
+    },
+    relayClient: { close: () => events.push("relay-close") },
+    mobileRelayServer: undefined,
+    localMobileRelayServer: undefined,
+    microBridge: { close: () => events.push("bridge-close") }
+  };
+
+  const shutdown = (DeckController.prototype.stop as unknown as (this: typeof controller) => Promise<void>).call(controller);
+  await Promise.resolve();
+  assert.deepEqual(events, ["agent-cleanup-start"]);
+  finishCleanup();
+  await shutdown;
+  assert.deepEqual(events, ["agent-cleanup-start", "agent-cleanup-finish", "relay-close", "bridge-close"]);
 });
 
 test("long-press settings default to Codex transcription and reject malformed shortcuts", () => {
