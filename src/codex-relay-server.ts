@@ -30,7 +30,11 @@ export type RelayServerConfig = {
 type RelayControl = Pick<CodexMicroRendererBridge,
   "refresh" | "selectThread" | "sendAgent" | "sendAction" | "sendJoystick" | "sendEncoder" | "adjustReasoning" | "runKeycap" | "consumeRateLimitReset">;
 
-type HeldAction = { timer: NodeJS.Timeout };
+type HeldAction = {
+  timer: NodeJS.Timeout;
+  down: Promise<void>;
+  release?: Promise<void>;
+};
 const HELD_ACTION_TIMEOUT_MS = 60_000;
 
 export class CodexRelayServer {
@@ -211,23 +215,13 @@ export class CodexRelayServer {
       ? `agent:${command.slot + 1}:${command.act === 1 ? "down" : "up"}`
       : command.kind;
     this.log(`Relay command ${commandLabel} received.`);
-    if (command.kind === "action" && command.act === 0 && this.actionHeldByAnotherSocket(socket, command.slot)) {
-      this.sendResult(socket, message.requestId, true);
-      return;
-    }
-    const heldAction = command.kind === "action" && command.act === 1
-      ? this.trackHeldAction(socket, command.slot)
-      : undefined;
     try {
-      await executeRelayCommand(this.control, command);
-      if (command.kind === "action") {
-        if (command.act === 0) this.clearHeldAction(socket, command.slot);
-      }
+      if (command.kind === "action") await this.executeAction(socket, command.slot, command.act);
+      else await executeRelayCommand(this.control, command);
       this.sendResult(socket, message.requestId, true);
       this.log(`Relay command ${commandLabel} completed in ${Date.now() - startedAt} ms.`);
       await this.publishSnapshot();
     } catch (error) {
-      if (heldAction) this.clearHeldAction(socket, heldAction);
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.log(`Relay command ${commandLabel} failed in ${Date.now() - startedAt} ms: ${errorMessage}`);
       this.sendResult(socket, message.requestId, false, errorMessage);
@@ -248,38 +242,69 @@ export class CodexRelayServer {
     }));
   }
 
-  private trackHeldAction(socket: WebSocket, slot: MicroActionSlot): MicroActionSlot {
-    this.clearHeldAction(socket, slot);
+  private async executeAction(socket: WebSocket, slot: MicroActionSlot, act: 0 | 1): Promise<void> {
+    const held = this.heldAction(socket, slot);
+    if (act === 1) {
+      if (held || this.actionHeldByAnotherSocket(socket, slot)) return;
+      const down = this.control.sendAction(slot, 1);
+      const tracked = this.trackHeldAction(socket, slot, down);
+      try { await down; }
+      catch (error) {
+        this.clearHeldAction(socket, slot, tracked);
+        throw error;
+      }
+      return;
+    }
+    if (held) return this.releaseHeldAction(socket, slot);
+    if (this.actionHeldByAnotherSocket(socket, slot)) return;
+    await this.control.sendAction(slot, 0);
+  }
+
+  private trackHeldAction(socket: WebSocket, slot: MicroActionSlot, down: Promise<void>): HeldAction {
     const held: HeldAction = { timer: setTimeout(() => {
       void this.releaseHeldAction(socket, slot).catch((error) =>
         this.log(`Relay held action ${slot} release failed: ${String(error)}`));
-    }, HELD_ACTION_TIMEOUT_MS) };
+    }, HELD_ACTION_TIMEOUT_MS), down };
     held.timer.unref();
     const bySlot = this.heldActions.get(socket) ?? new Map<MicroActionSlot, HeldAction>();
     bySlot.set(slot, held);
     this.heldActions.set(socket, bySlot);
-    return slot;
+    return held;
   }
 
   private actionHeldByAnotherSocket(socket: WebSocket, slot: MicroActionSlot): boolean {
     return [...this.heldActions.entries()].some(([owner, bySlot]) => owner !== socket && bySlot.has(slot));
   }
 
-  private clearHeldAction(socket: WebSocket, slot: MicroActionSlot): void {
+  private heldAction(socket: WebSocket, slot: MicroActionSlot): HeldAction | undefined {
+    return this.heldActions.get(socket)?.get(slot);
+  }
+
+  private clearHeldAction(socket: WebSocket, slot: MicroActionSlot, expected?: HeldAction): void {
     const bySlot = this.heldActions.get(socket);
     const held = bySlot?.get(slot);
-    if (!held || !bySlot) return;
+    if (!held || !bySlot || (expected && held !== expected)) return;
     clearTimeout(held.timer);
     bySlot.delete(slot);
     if (bySlot.size === 0) this.heldActions.delete(socket);
   }
 
   private async releaseHeldAction(socket: WebSocket, slot: MicroActionSlot): Promise<void> {
-    const bySlot = this.heldActions.get(socket);
-    const held = bySlot?.get(slot);
+    const held = this.heldAction(socket, slot);
     if (!held) return;
-    this.clearHeldAction(socket, slot);
-    await this.control.sendAction(slot, 0);
+    if (!held.release) {
+      clearTimeout(held.timer);
+      held.release = (async () => {
+        try { await held.down; }
+        catch { return; }
+        await this.control.sendAction(slot, 0);
+      })();
+      void held.release.then(
+        () => this.clearHeldAction(socket, slot, held),
+        () => this.clearHeldAction(socket, slot, held)
+      );
+    }
+    await held.release;
   }
 
   private scheduleSnapshot(delay = 1_200): void {

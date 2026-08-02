@@ -852,7 +852,7 @@ test("relay selects a thread and releases an owned action when its socket closes
   }
 });
 
-test("a relay socket cannot release an action held by another socket", async () => {
+test("relay assigns each held action slot exclusively to its first socket owner", async () => {
   const port = await freePort();
   const calls: unknown[] = [];
   const control = {
@@ -878,12 +878,18 @@ test("a relay socket cannot release an action held by another socket", async () 
     }
     first.send(JSON.stringify({ type: "command", protocol: RELAY_PROTOCOL_VERSION, requestId: "first-down", command: { kind: "action", slot: "ACT10_ACT11", act: 1 } }));
     assert.equal((await firstMessages.next()).ok, true);
+    await firstMessages.next();
     await secondMessages.next();
+    second.send(JSON.stringify({ type: "command", protocol: RELAY_PROTOCOL_VERSION, requestId: "second-down", command: { kind: "action", slot: "ACT10_ACT11", act: 1 } }));
+    assert.equal((await secondMessages.next()).ok, true);
+    await secondMessages.next();
+    await firstMessages.next();
     second.send(JSON.stringify({ type: "command", protocol: RELAY_PROTOCOL_VERSION, requestId: "second-up", command: { kind: "action", slot: "ACT10_ACT11", act: 0 } }));
     assert.equal((await secondMessages.next()).ok, true);
+    await firstMessages.next();
     assert.deepEqual(calls, [["ACT10_ACT11", 1]]);
-    first.close();
-    await waitUntil(() => calls.length === 2);
+    first.send(JSON.stringify({ type: "command", protocol: RELAY_PROTOCOL_VERSION, requestId: "first-up", command: { kind: "action", slot: "ACT10_ACT11", act: 0 } }));
+    assert.equal((await firstMessages.next()).ok, true);
     assert.deepEqual(calls, [["ACT10_ACT11", 1], ["ACT10_ACT11", 0]]);
   } finally {
     first.terminate();
@@ -892,15 +898,18 @@ test("a relay socket cannot release an action held by another socket", async () 
   }
 });
 
-test("relay releases a held action when its socket closes during action down", async () => {
+test("relay releases a held action only after its in-flight down settles", async () => {
   const port = await freePort();
   const calls: unknown[] = [];
   let finishDown: (() => void) | undefined;
   const control = {
     refresh: async () => snapshot, selectThread: async () => {}, sendAgent: async () => {},
     sendAction: async (slot: string, act: 0 | 1) => {
-      calls.push([slot, act]);
-      if (act === 1) await new Promise<void>((resolve) => { finishDown = resolve; });
+      calls.push([slot, act === 1 ? "down-start" : "up"]);
+      if (act === 1) {
+        await new Promise<void>((resolve) => { finishDown = resolve; });
+        calls.push([slot, "down-complete"]);
+      }
     },
     sendJoystick: async () => {}, sendEncoder: async () => {}, adjustReasoning: async () => {},
     runKeycap: async () => {}, consumeRateLimitReset: async () => {}
@@ -922,9 +931,14 @@ test("relay releases a held action when its socket closes during action down", a
     socket.close();
     await closed;
     await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(calls, [["ACT10_ACT11", "down-start"]]);
     finishDown!();
-    await waitUntil(() => calls.length === 2);
-    assert.deepEqual(calls, [["ACT10_ACT11", 1], ["ACT10_ACT11", 0]]);
+    await waitUntil(() => calls.length === 3);
+    assert.deepEqual(calls, [
+      ["ACT10_ACT11", "down-start"],
+      ["ACT10_ACT11", "down-complete"],
+      ["ACT10_ACT11", "up"]
+    ]);
   } finally {
     socket.terminate();
     await server.close();
@@ -1031,17 +1045,26 @@ test("relay client preserves last-known tasks but marks their host offline after
     { enabled: true, url: `ws://127.0.0.1:${port}`, token: "t".repeat(32) },
     (value) => deliveredSnapshots.push(value), () => {}
   );
-  client.start();
-  await waitUntil(() => client.currentHealth().state === "ready");
-  assert.equal(deliveredSnapshots.length, 1);
-  const lastKnown = client.currentSnapshot();
-  assert.equal(lastKnown?.snapshot.slots[0]?.title, "Task 1");
-  await server.close();
-  await waitUntil(() => client.currentHealth().state === "offline");
-  assert.equal(deliveredSnapshots.length, 1, "health-only transitions must not call the snapshot callback");
-  assert.equal(client.currentSnapshot(), lastKnown);
-  assert.equal(client.isConnected(), false);
-  client.close();
+  try {
+    client.start();
+    await waitUntil(() => client.currentHealth().state === "ready");
+    assert.equal(deliveredSnapshots.length, 1);
+    await assert.rejects(
+      client.send({ kind: "action", slot: "ACT10_ACT11", act: 1 }, "other-host"),
+      /expected remote Codex host/
+    );
+    const lastKnown = client.currentSnapshot();
+    assert.equal(lastKnown?.snapshot.slots[0]?.title, "Task 1");
+    await server.close();
+    await waitUntil(() => client.currentHealth().state === "offline");
+    assert.equal(deliveredSnapshots.length, 1, "health-only transitions must not call the snapshot callback");
+    assert.equal(client.currentSnapshot(), lastKnown);
+    assert.equal(client.currentHost(), undefined);
+    assert.equal(client.isConnected(), false);
+  } finally {
+    client.close();
+    await server.close();
+  }
 });
 
 async function freePort(): Promise<number> {

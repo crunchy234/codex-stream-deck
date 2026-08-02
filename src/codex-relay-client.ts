@@ -29,6 +29,7 @@ export class CodexRelayClient {
   private stopped = false;
   private connecting = false;
   private host?: CodexHost;
+  private readySocket?: WebSocket;
   private snapshot?: HostSnapshot;
   private lastSnapshotReceivedAt = 0;
   private health: HostHealth = { state: "connecting", reason: "awaiting-snapshot", changedAt: Date.now() };
@@ -48,6 +49,8 @@ export class CodexRelayClient {
     this.reconnect = undefined;
     this.socket?.close(1000, "client stopping");
     this.socket = undefined;
+    this.readySocket = undefined;
+    this.host = undefined;
     this.health = { state: "offline", reason: "relay-disconnected", changedAt: Date.now() };
     this.rejectPending("Remote Codex relay disconnected.");
   }
@@ -59,9 +62,15 @@ export class CodexRelayClient {
   }
   isConnected(): boolean { return this.socket?.readyState === WebSocket.OPEN && this.host != null; }
 
-  async send(command: RelayCommand): Promise<void> {
+  async send(command: RelayCommand, expectedHostId?: string): Promise<void> {
     const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN || !this.host) throw new Error("Remote Codex host is offline.");
+    const host = this.host;
+    if (!socket || this.readySocket !== socket || socket.readyState !== WebSocket.OPEN || !host) {
+      throw new Error("Remote Codex host is offline.");
+    }
+    if (expectedHostId && host.hostId !== expectedHostId) {
+      throw new Error("The expected remote Codex host is no longer connected.");
+    }
     const requestId = randomUUID();
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -81,7 +90,7 @@ export class CodexRelayClient {
       const socket = new WebSocket(this.config.url, { handshakeTimeout: 4_000, maxPayload: 64 * 1024, perMessageDeflate: false });
       this.socket = socket;
       socket.on("open", () => socket.send(JSON.stringify({ type: "auth", protocol: RELAY_PROTOCOL_VERSION, token: this.config.token })));
-      socket.on("message", (raw) => this.handleMessage(raw.toString()));
+      socket.on("message", (raw) => this.handleMessage(socket, raw.toString()));
       socket.on("close", () => this.disconnected(socket));
       socket.on("error", () => this.disconnected(socket));
     } catch (error) {
@@ -91,17 +100,19 @@ export class CodexRelayClient {
     } finally { this.connecting = false; }
   }
 
-  private handleMessage(raw: string): void {
+  private handleMessage(socket: WebSocket, raw: string): void {
+    if (this.socket !== socket) return;
     let parsed: unknown;
     try { parsed = JSON.parse(raw); }
     catch { return; }
     const message = parseRelayServerMessage(parsed);
     if (!message) return;
     if (message.type === "ready") {
+      this.readySocket = socket;
       this.host = message.host;
       this.health = { state: "degraded", reason: "awaiting-snapshot", changedAt: Date.now() };
       this.log(`Remote Codex host connected: ${message.host.hostName} (${message.host.platform}).`);
-    } else if (message.type === "snapshot") {
+    } else if (message.type === "snapshot" && this.readySocket === socket) {
       const receivedAt = Date.now();
       this.host = message.host;
       this.snapshot = normalizeHostSnapshotAtReceipt(
@@ -111,10 +122,10 @@ export class CodexRelayClient {
       this.lastSnapshotReceivedAt = receivedAt;
       this.health = { state: "ready", changedAt: receivedAt };
       this.onSnapshot(this.snapshot);
-    } else if (message.type === "health") {
+    } else if (message.type === "health" && this.readySocket === socket) {
       this.host = message.host;
       this.health = { state: "degraded", reason: message.reason, changedAt: Date.now() };
-    } else this.handleResult(message);
+    } else if (message.type === "result") this.handleResult(message);
   }
 
   private handleResult(message: RelayResultMessage): void {
@@ -129,6 +140,8 @@ export class CodexRelayClient {
   private disconnected(expected: WebSocket): void {
     if (this.socket !== expected) return;
     this.socket = undefined;
+    this.readySocket = undefined;
+    this.host = undefined;
     this.health = { state: "offline", reason: "relay-disconnected", changedAt: Date.now() };
     this.rejectPending("Remote Codex relay disconnected.");
     this.scheduleReconnect();

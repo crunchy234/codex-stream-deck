@@ -544,7 +544,7 @@ export class DeckController {
     if (this.relayClient?.currentHost()?.hostId !== owner.hostId) {
       throw new Error("The task-owning Codex host is no longer connected.");
     }
-    await this.relayClient.send(command);
+    await this.relayClient.send(command, owner.hostId);
   }
 
   private async dispatchLocal(command: RelayCommand): Promise<void> {
