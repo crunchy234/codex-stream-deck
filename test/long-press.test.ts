@@ -75,7 +75,7 @@ test("quick release selects once and never starts transcription", async () => {
   assert.deepEqual(calls, [["select", owner.host.hostId, owner.threadKey!]]);
 });
 
-test("selection resolving after key-up cannot start transcription", async () => {
+test("key-up settles before a late selection and cannot start transcription", async () => {
   const clock = new FakeClock();
   const calls: Call[] = [];
   let resolveSelection!: () => void;
@@ -95,9 +95,14 @@ test("selection resolving after key-up cannot start transcription", async () => 
 
   const pending = machine.down("action-a", owner);
   clock.advance(450);
-  await machine.up("action-a");
+  const releasing = machine.up("action-a");
+  const releaseSettledBeforeSelection = await Promise.race([
+    releasing.then(() => true),
+    settle().then(() => false)
+  ]);
   resolveSelection();
-  await pending;
+  await Promise.all([pending, releasing]);
+  assert.equal(releaseSettledBeforeSelection, true);
   assert.equal(calls.some(([kind]) => kind === "down"), false);
 });
 

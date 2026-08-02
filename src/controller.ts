@@ -88,6 +88,7 @@ type AgentPress = {
   transcriptionStarted: boolean;
   timer?: NodeJS.Timeout;
   selection: Promise<void>;
+  /** Only the dispatched transcription down-edge, never its preceding selection. */
   start?: Promise<void>;
 };
 
@@ -177,8 +178,7 @@ export class AgentPressMachine {
 
   private async beginTranscription(press: AgentPress): Promise<void> {
     if (!this.isCurrent(press) || press.released || this.activeHold || this.transport.settings().mode !== "codex-transcription") return;
-    press.start = this.startTranscription(press);
-    try { await press.start; }
+    try { await this.startTranscription(press); }
     catch (error) { this.transport.reportError(error); }
   }
 
@@ -186,9 +186,16 @@ export class AgentPressMachine {
     await press.selection;
     if (!this.isCurrent(press) || press.released || this.activeHold || this.transport.settings().mode !== "codex-transcription") return;
     this.activeHold = press.actionId;
+    let downEdge: Promise<void>;
     try {
-      await this.transport.transcription(press.owner, 1);
+      downEdge = Promise.resolve(this.transport.transcription(press.owner, 1));
     } catch (error) {
+      if (this.activeHold === press.actionId) this.activeHold = undefined;
+      throw error;
+    }
+    press.start = downEdge;
+    try { await downEdge; }
+    catch (error) {
       if (this.activeHold === press.actionId) this.activeHold = undefined;
       throw error;
     }
