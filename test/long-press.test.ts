@@ -4,6 +4,7 @@ import {
   AgentPressMachine, DeckController, normalizeLongPressSettings,
   type AgentPressClock, type AgentPressOwner
 } from "../src/controller.js";
+import type { RelayCommand } from "../src/relay-protocol.js";
 
 type Call = ["select" | "down" | "up", string, string];
 
@@ -73,6 +74,33 @@ test("quick release selects once and never starts transcription", async () => {
   clock.advance(449);
   await machine.up("action-a");
   assert.deepEqual(calls, [["select", owner.host.hostId, owner.threadKey!]]);
+});
+
+test("controller long-press transcription uses the owner-pinned Codex action edges", async () => {
+  const calls: Array<{ command: RelayCommand; expectedHostId: string | undefined }> = [];
+  const controller = new DeckController() as unknown as {
+    agentPresses: {
+      transport: { transcription(assignment: AgentPressOwner, act: 0 | 1): Promise<void> };
+    };
+    localHost?: AgentPressOwner["host"];
+    relayClient?: {
+      currentHost(): AgentPressOwner["host"] | undefined;
+      send(command: RelayCommand, expectedHostId?: string): Promise<void>;
+    };
+  };
+  controller.localHost = { hostId: "local-host", hostName: "Local", platform: "darwin" };
+  controller.relayClient = {
+    currentHost: () => owner.host,
+    send: async (command, expectedHostId) => { calls.push({ command, expectedHostId }); }
+  };
+
+  await controller.agentPresses.transport.transcription(owner, 1);
+  await controller.agentPresses.transport.transcription(owner, 0);
+
+  assert.deepEqual(calls, [
+    { command: { kind: "action", slot: "ACT10_ACT11", act: 1 }, expectedHostId: owner.host.hostId },
+    { command: { kind: "action", slot: "ACT10_ACT11", act: 0 }, expectedHostId: owner.host.hostId }
+  ]);
 });
 
 test("key-up settles before a late selection and cannot start transcription", async () => {

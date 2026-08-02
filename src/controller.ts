@@ -301,7 +301,7 @@ export class DeckController {
     settings: () => this.longPressSettings,
     select: (owner) => this.sendToPinnedOwner(owner.host, { kind: "select-thread", threadKey: owner.threadKey! }),
     transcription: (owner, act) => this.sendToPinnedOwner(owner.host, {
-      kind: "agent", slot: owner.sourceSlot, threadKey: owner.threadKey!, act
+      kind: "action", slot: "ACT10_ACT11", act
     }),
     macosShortcut: (owner, act) => this.sendMacosShortcut(owner, act),
     reportError: (error) => streamDeck.logger.error(`Agent long-press failed: ${String(error)}`)
