@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import WebSocket from "ws";
+import { focusCodexWindow } from "./codex-open.js";
 import { codexDeckStateRoot } from "./codex-deck-paths.js";
 import { OFFICIAL_KEYCAP_IDS, type OfficialKeycapId } from "./keycaps.js";
 import { CodexSessionOwnershipIndex } from "./session-ownership.js";
@@ -41,6 +42,22 @@ type CdpResponse = {
 export type AgentDispatchPlan =
   | { kind: "native"; slot: number; threadKey: string }
   | { kind: "direct"; threadKey: string };
+
+const THREAD_ID_SUFFIX = /(?:^|:)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+/** Compares renderer sidebar IDs without changing the task key sent to Codex or a relay peer. */
+export function canonicalThreadId(threadKey: string): string {
+  return threadKey.match(THREAD_ID_SUFFIX)?.[1] ?? threadKey;
+}
+
+/** Selects a sidebar row without conflating same-UUID mirrors from different hosts. */
+export function selectSidebarThreadId(threadKey: string, sidebarThreadIds: readonly string[]): string | undefined {
+  const exact = sidebarThreadIds.find((candidate) => candidate === threadKey);
+  if (exact) return exact;
+  const canonical = canonicalThreadId(threadKey);
+  const matches = sidebarThreadIds.filter((candidate) => canonicalThreadId(candidate) === canonical);
+  return matches.length === 1 ? matches[0] : undefined;
+}
 
 export function resolveAgentDispatch(
   snapshot: MicroSnapshot,
@@ -335,6 +352,10 @@ export class CodexMicroRendererBridge {
     if (!Number.isInteger(slot) || slot < 0 || slot > 5) throw new Error(`Ungültiger Micro-Agent-Slot: ${slot}`);
     const snapshot = act === 1 ? await this.refresh() : this.lastSnapshot ?? await this.refresh();
     const plan = resolveAgentDispatch(snapshot, slot, expectedThreadKey);
+    if (act === 1) {
+      try { await focusCodexWindow(); }
+      catch (error) { this.log(`Codex window focus was unavailable: ${String(error)}`); }
+    }
     if (plan.kind === "native") {
       if (plan.slot !== slot) {
         this.log(`Agent slot ${slot + 1} changed before dispatch; using current native slot ${plan.slot + 1}.`);
@@ -354,24 +375,39 @@ export class CodexMicroRendererBridge {
   private async ensureThreadActivated(threadKey: string): Promise<void> {
     const result = await this.evaluate<"active" | "opened" | "missing" | "failed">(`(async () => {
       const threadKey = ${JSON.stringify(threadKey)};
-      const activeThreadKey = () => document.querySelector('[data-above-composer-conversation-id]')
-        ?.getAttribute('data-above-composer-conversation-id')
-        ?? document.querySelector('[data-app-action-sidebar-thread-id][data-app-action-sidebar-thread-active="true"]')
+      const canonicalThreadId = (value) => value?.match(/(?:^|:)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i)?.[1] ?? value;
+      const activeSidebarThreadId = () => document.querySelector('[data-app-action-sidebar-thread-id][data-app-action-sidebar-thread-active="true"]')
           ?.getAttribute('data-app-action-sidebar-thread-id')
         ?? document.querySelector('[data-app-action-sidebar-thread-id][aria-current="page"]')
           ?.getAttribute('data-app-action-sidebar-thread-id')
         ?? null;
+      const activeComposerThreadId = () => document.querySelector('[data-above-composer-conversation-id]')
+        ?.getAttribute('data-above-composer-conversation-id')
+        ?? null;
+      const matchesThreadId = (candidate) => candidate === threadKey
+        || (!threadKey.includes(':') && canonicalThreadId(candidate) === canonicalThreadId(threadKey));
+      const isActiveThread = () => {
+        const sidebarId = activeSidebarThreadId();
+        return sidebarId ? matchesThreadId(sidebarId) : matchesThreadId(activeComposerThreadId());
+      };
       const waitForActive = async (duration) => {
         const deadline = Date.now() + duration;
         while (Date.now() < deadline) {
-          if (activeThreadKey() === threadKey) return true;
+          if (isActiveThread()) return true;
           await new Promise((resolve) => setTimeout(resolve, 25));
         }
-        return activeThreadKey() === threadKey;
+        return isActiveThread();
       };
       if (await waitForActive(250)) return 'active';
-      const item = [...document.querySelectorAll('[data-app-action-sidebar-thread-id]')]
-        .find((element) => element.getAttribute('data-app-action-sidebar-thread-id') === threadKey);
+      const items = [...document.querySelectorAll('[data-app-action-sidebar-thread-id]')];
+      const selectedId = (() => {
+        const ids = items.map((element) => element.getAttribute('data-app-action-sidebar-thread-id')).filter(Boolean);
+        const exact = ids.find((id) => id === threadKey);
+        if (exact) return exact;
+        const matches = ids.filter((id) => canonicalThreadId(id) === canonicalThreadId(threadKey));
+        return matches.length === 1 ? matches[0] : null;
+      })();
+      const item = selectedId ? items.find((element) => element.getAttribute('data-app-action-sidebar-thread-id') === selectedId) : null;
       if (!item) return 'missing';
       const selector = 'button, a, [role="button"], [role="link"]';
       const clickable = item.matches(selector) ? item : item.querySelector(selector) ?? item.closest(selector) ?? item;

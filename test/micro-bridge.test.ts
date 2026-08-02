@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  REASONING_ENCODER_KEYS, resolveAgentDispatch, retainEvaluationPromise, selectCodexMainTarget
+  canonicalThreadId, REASONING_ENCODER_KEYS, resolveAgentDispatch, selectSidebarThreadId, retainEvaluationPromise, selectCodexMainTarget
 } from "../src/codex-micro-renderer-bridge.js";
 import { ADDITIONAL_KEYCAPS, OFFICIAL_KEYCAP_IDS } from "../src/keycaps.js";
 import { visualStatusFromMicro } from "../src/status.js";
@@ -107,6 +107,23 @@ test("agent routing follows the stable thread identity when a cross-host slot is
   assert.deepEqual(resolveAgentDispatch(snapshot, 2, offDeckThread), {
     kind: "direct", threadKey: offDeckThread
   });
+});
+
+test("renderer thread comparisons reduce host-prefixed and temporary task identities to UUIDs", () => {
+  const threadId = "019f6de7-44c2-7fe2-9d17-9322c952e626";
+  assert.equal(canonicalThreadId(threadId), threadId);
+  assert.equal(canonicalThreadId(`local:${threadId}`), threadId);
+  assert.equal(canonicalThreadId(`remote-ssh-codex-managed:mlgpu:${threadId}`), threadId);
+  assert.equal(canonicalThreadId("local:client-new-thread:3b1f9a6b-cb70-4318-8a84-bb6ae44542b7"), "3b1f9a6b-cb70-4318-8a84-bb6ae44542b7");
+});
+
+test("renderer selection prefers an exact host identity and rejects ambiguous UUID fallbacks", () => {
+  const threadId = "019f6de7-44c2-7fe2-9d17-9322c952e626";
+  const local = `local:${threadId}`;
+  const remote = `remote-ssh-codex-managed:mlgpu:${threadId}`;
+  assert.equal(selectSidebarThreadId(remote, [local, remote]), remote);
+  assert.equal(selectSidebarThreadId(threadId, [local]), local);
+  assert.equal(selectSidebarThreadId(threadId, [local, remote]), undefined);
 });
 
 test("reasoning controls use the official native encoder rotation events", async () => {

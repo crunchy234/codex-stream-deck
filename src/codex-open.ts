@@ -28,8 +28,23 @@ export function codexOpenSpec(
   throw new Error(`Opening Codex links is unsupported on ${targetPlatform}.`);
 }
 
-export function openCodexThread(threadId: string): Promise<void> {
-  const spec = codexOpenSpec(threadId);
+export function codexFocusSpec(targetPlatform = process.platform, systemRoot = process.env.SystemRoot ?? "C:\\Windows"): CodexOpenSpec {
+  if (targetPlatform === "darwin") return { executable: "/usr/bin/open", args: ["-b", "com.openai.codex"], windowsHide: false };
+  if (targetPlatform === "win32") {
+    const executable = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    return {
+      executable,
+      args: [
+        "-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
+        "Add-Type -AssemblyName Microsoft.VisualBasic; $process = Get-Process -Name ChatGPT -ErrorAction Stop | Select-Object -First 1; [Microsoft.VisualBasic.Interaction]::AppActivate($process.Id) | Out-Null"
+      ],
+      windowsHide: true
+    };
+  }
+  throw new Error(`Focusing Codex is unsupported on ${targetPlatform}.`);
+}
+
+function runCodexSpec(spec: CodexOpenSpec, errorLabel: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(spec.executable, spec.args, { windowsHide: spec.windowsHide, stdio: ["ignore", "ignore", "pipe"] });
     let errorOutput = "";
@@ -37,7 +52,15 @@ export function openCodexThread(threadId: string): Promise<void> {
     child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`Codex link could not be opened (${code ?? "unknown"}): ${errorOutput.trim()}`));
+      else reject(new Error(`${errorLabel} (${code ?? "unknown"}): ${errorOutput.trim()}`));
     });
   });
+}
+
+export function openCodexThread(threadId: string): Promise<void> {
+  return runCodexSpec(codexOpenSpec(threadId), "Codex link could not be opened");
+}
+
+export function focusCodexWindow(): Promise<void> {
+  return runCodexSpec(codexFocusSpec(), "Codex window could not be focused");
 }

@@ -769,7 +769,7 @@ test("authenticated relay publishes snapshots and dispatches typed commands", as
   const calls: unknown[] = [];
   const control = {
     refresh: async () => snapshot,
-    sendAgent: async (slot: number, act: 0 | 1) => { calls.push(["agent", slot, act]); },
+    sendAgent: async (slot: number, act: 0 | 1, threadKey?: string) => { calls.push(["agent", slot, act, threadKey]); },
     sendAction: async () => {}, sendJoystick: async () => {}, sendEncoder: async () => {},
     adjustReasoning: async () => {}, runKeycap: async () => {}, consumeRateLimitReset: async () => {}
   };
@@ -794,7 +794,7 @@ test("authenticated relay publishes snapshots and dispatches typed commands", as
     command: { kind: "agent", slot: 2, threadKey: "00000000-0000-4000-8000-000000000002", act: 1 }
   }));
   const result = await messages.next();
-  assert.deepEqual(calls, [["agent", 2, 1]]);
+  assert.deepEqual(calls, [["agent", 2, 1, "00000000-0000-4000-8000-000000000002"]]);
   assert.equal(result.type, "result");
   assert.equal(result.ok, true);
   socket.close();
