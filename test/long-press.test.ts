@@ -318,6 +318,47 @@ test("stopping also waits for a settings-triggered release", async () => {
   assert.deepEqual(calls, ["down-start", "down-finish", "up"]);
 });
 
+test("shutdown ignores new presses while draining and cannot act after transport closure", async () => {
+  const clock = new FakeClock();
+  const calls: string[] = [];
+  let transportClosed = false;
+  let finishDown!: () => void;
+  const down = new Promise<void>((resolve) => { finishDown = resolve; });
+  const machine = new AgentPressMachine({
+    clock,
+    settings: () => normalizeLongPressSettings(undefined),
+    select: async () => { calls.push("select"); },
+    transcription: async (_assignment, act) => {
+      if (transportClosed) {
+        calls.push(`post-close-${act === 1 ? "down" : "up"}`);
+        return;
+      }
+      if (act === 1) {
+        calls.push("down-start");
+        await down;
+        calls.push("down-finish");
+        return;
+      }
+      calls.push("up");
+    },
+    reportError: () => undefined
+  });
+
+  await machine.down("action-a", owner);
+  clock.advance(450);
+  await settle();
+  const stopping = machine.stop();
+  await settle();
+  await machine.down("action-b", { ...owner, id: 1 });
+  finishDown();
+  await stopping;
+  transportClosed = true;
+  clock.advance(60_000);
+  await settle();
+
+  assert.deepEqual(calls, ["select", "down-start", "down-finish", "up"]);
+});
+
 test("controller shutdown releases agent presses before closing transports", async () => {
   const events: string[] = [];
   let finishCleanup!: () => void;

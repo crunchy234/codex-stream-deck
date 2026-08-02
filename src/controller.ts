@@ -118,6 +118,11 @@ export class AgentPressMachine {
   private readonly generations = new Map<string, number>();
   /** Releases survive removal from `presses` so controller shutdown can await them. */
   private readonly pendingReleases = new Set<Promise<void>>();
+  /**
+   * `stop()` is terminal for this controller-owned machine. It prevents a new
+   * key-down from escaping the shutdown drain and reaching closed transports.
+   */
+  private stopping = false;
   private activeHold?: string;
   private readonly clock: AgentPressClock;
 
@@ -126,6 +131,7 @@ export class AgentPressMachine {
   }
 
   async down(actionId: string, owner: RoutedAgentSlot): Promise<void> {
+    if (this.stopping) return;
     if (this.presses.has(actionId)) return;
     if (!owner.threadKey) throw new Error("The selected Codex task has no stable thread identity.");
     const generation = (this.generations.get(actionId) ?? 0) + 1;
@@ -160,8 +166,21 @@ export class AgentPressMachine {
   }
 
   async stop(): Promise<void> {
-    await Promise.all([...this.presses.keys()].map((actionId) => this.up(actionId)));
-    while (this.pendingReleases.size > 0) await Promise.all([...this.pendingReleases]);
+    this.stopping = true;
+    let failure: unknown;
+    let hasFailure = false;
+    while (this.presses.size > 0 || this.pendingReleases.size > 0) {
+      const activePresses = [...this.presses.keys()].map((actionId) => this.up(actionId));
+      const pending = [...this.pendingReleases];
+      const results = await Promise.allSettled([...activePresses, ...pending]);
+      for (const result of results) {
+        if (!hasFailure && result.status === "rejected") {
+          hasFailure = true;
+          failure = result.reason;
+        }
+      }
+    }
+    if (hasFailure) throw failure;
   }
 
   updateSettings(): void {
