@@ -12,23 +12,16 @@ abstract class AgentAction extends SingletonAction {
   }
 
   override onWillDisappear(ev: WillDisappearEvent): void {
+    void this.controller.cancelAgentPress(ev.action.id);
     this.controller.unregisterAgent(ev.action);
   }
 
-  override async onKeyDown(ev: KeyDownEvent): Promise<void> {
-    try { await this.controller.sendAgent(this.slot, 1); }
-    catch (error) {
-      streamDeck.logger.error(`Agent key ${this.slot + 1} failed: ${String(error)}`);
-      await ev.action.showAlert();
-    }
+  override onKeyDown(ev: KeyDownEvent): Promise<void> {
+    return this.controller.beginAgentPress(ev.action.id, this.slot);
   }
 
-  override async onKeyUp(ev: KeyUpEvent): Promise<void> {
-    try { await this.controller.sendAgent(this.slot, 0); }
-    catch (error) {
-      streamDeck.logger.error(`Agent key ${this.slot + 1} failed: ${String(error)}`);
-      await ev.action.showAlert();
-    }
+  override onKeyUp(ev: KeyUpEvent): Promise<void> {
+    return this.controller.endAgentPress(ev.action.id);
   }
 }
 

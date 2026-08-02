@@ -35,9 +35,189 @@ type UsageLimitRegistration = { action: KeyAction; mode: UsageLimitMode };
 type ActionIdentity = { id: string };
 type ContextRingSettings = { showContextRings?: boolean };
 
+export type LongPressMode = "off" | "codex-transcription" | "macos-shortcut";
+export type MacosShortcutModifier =
+  | "left-option" | "right-option" | "left-command" | "right-command"
+  | "left-control" | "right-control" | "left-shift" | "right-shift";
+export type MacosShortcut = { keyCode?: number; modifiers?: MacosShortcutModifier[] };
+export type LongPressSettings = { mode?: LongPressMode; shortcut?: MacosShortcut };
+type ResolvedLongPressSettings = { mode: LongPressMode; shortcut?: MacosShortcut };
+
+const LONG_PRESS_MODIFIERS = new Set<MacosShortcutModifier>([
+  "left-option", "right-option", "left-command", "right-command",
+  "left-control", "right-control", "left-shift", "right-shift"
+]);
+
+/** Discards malformed persisted settings before they can reach an input backend. */
+export function normalizeLongPressSettings(settings: LongPressSettings | undefined): ResolvedLongPressSettings {
+  const mode = settings?.mode ?? "codex-transcription";
+  if (mode === "off" || mode === "codex-transcription") return { mode };
+  if (mode !== "macos-shortcut") return { mode: "codex-transcription" };
+  const shortcut = settings?.shortcut;
+  if (!shortcut || typeof shortcut !== "object") return { mode: "off" };
+  const keyCode = shortcut.keyCode;
+  const modifiers = shortcut.modifiers;
+  if (keyCode != null && (!Number.isInteger(keyCode) || keyCode < 0 || keyCode > 127)) return { mode: "off" };
+  if (modifiers != null && (!Array.isArray(modifiers) || modifiers.some((modifier) => !LONG_PRESS_MODIFIERS.has(modifier)))) {
+    return { mode: "off" };
+  }
+  const uniqueModifiers = modifiers ? [...new Set(modifiers)] : undefined;
+  if (keyCode == null && (!uniqueModifiers || uniqueModifiers.length === 0)) return { mode: "off" };
+  return {
+    mode,
+    shortcut: {
+      ...(keyCode == null ? {} : { keyCode }),
+      ...(uniqueModifiers?.length ? { modifiers: uniqueModifiers } : {})
+    }
+  };
+}
+
+export type AgentPressOwner = RoutedAgentSlot;
+export type AgentPressClock = {
+  now(): number;
+  setTimeout(callback: () => void, delay: number): NodeJS.Timeout;
+  clearTimeout(timer: NodeJS.Timeout): void;
+};
+
+type AgentPress = {
+  actionId: string;
+  generation: number;
+  owner: RoutedAgentSlot;
+  startedAt: number;
+  released: boolean;
+  transcriptionStarted: boolean;
+  timer?: NodeJS.Timeout;
+  selection: Promise<void>;
+  start?: Promise<void>;
+};
+
+type AgentPressTransport = {
+  clock?: AgentPressClock;
+  settings(): ResolvedLongPressSettings;
+  select(owner: RoutedAgentSlot): Promise<void>;
+  transcription(owner: RoutedAgentSlot, act: 0 | 1): Promise<void>;
+  reportError(error: unknown): void;
+};
+
+const systemAgentPressClock: AgentPressClock = {
+  now: () => Date.now(),
+  setTimeout: (callback, delay) => setTimeout(callback, delay),
+  clearTimeout: (timer) => clearTimeout(timer)
+};
+
+/**
+ * One controller-owned machine for all physical agent keys. The record pins a
+ * route at key-down, so subsequent refreshes and host changes cannot redirect
+ * either edge of a transcription hold.
+ */
+export class AgentPressMachine {
+  private readonly presses = new Map<string, AgentPress>();
+  private readonly generations = new Map<string, number>();
+  private activeHold?: string;
+  private readonly clock: AgentPressClock;
+
+  constructor(private readonly transport: AgentPressTransport) {
+    this.clock = transport.clock ?? systemAgentPressClock;
+  }
+
+  async down(actionId: string, owner: RoutedAgentSlot): Promise<void> {
+    if (this.presses.has(actionId)) return;
+    if (!owner.threadKey) throw new Error("The selected Codex task has no stable thread identity.");
+    const generation = (this.generations.get(actionId) ?? 0) + 1;
+    this.generations.set(actionId, generation);
+    let selection!: Promise<void>;
+    const press: AgentPress = {
+      actionId, generation, owner, startedAt: this.clock.now(), released: false, transcriptionStarted: false, selection
+    };
+    this.presses.set(actionId, press);
+    press.timer = this.clock.setTimeout(() => { void this.beginTranscription(press); }, LONG_PRESS_THRESHOLD_MS);
+    try {
+      selection = this.transport.select(owner);
+      press.selection = selection;
+      await selection;
+    } catch (error) {
+      this.discard(press);
+      throw error;
+    }
+  }
+
+  async up(actionId: string): Promise<void> {
+    const press = this.presses.get(actionId);
+    if (!press) return;
+    press.released = true;
+    this.presses.delete(actionId);
+    if (press.timer) this.clock.clearTimeout(press.timer);
+    if (press.start && !press.transcriptionStarted) {
+      void press.start.then(() => this.releaseTranscription(press)).catch((error) => this.transport.reportError(error));
+      return;
+    }
+    await this.releaseTranscription(press);
+  }
+
+  async cancel(actionId: string): Promise<void> {
+    await this.up(actionId);
+  }
+
+  async stop(): Promise<void> {
+    await Promise.all([...this.presses.keys()].map((actionId) => this.up(actionId)));
+  }
+
+  updateSettings(): void {
+    for (const press of this.presses.values()) {
+      press.released = true;
+      if (press.timer) this.clock.clearTimeout(press.timer);
+      this.presses.delete(press.actionId);
+      if (press.start && !press.transcriptionStarted) {
+        void press.start.then(() => this.releaseTranscription(press)).catch((error) => this.transport.reportError(error));
+      } else void this.releaseTranscription(press).catch((error) => this.transport.reportError(error));
+    }
+  }
+
+  private async beginTranscription(press: AgentPress): Promise<void> {
+    if (!this.isCurrent(press) || press.released || this.activeHold || this.transport.settings().mode !== "codex-transcription") return;
+    press.start = this.startTranscription(press);
+    try { await press.start; }
+    catch (error) { this.transport.reportError(error); }
+  }
+
+  private async startTranscription(press: AgentPress): Promise<void> {
+    await press.selection;
+    if (!this.isCurrent(press) || press.released || this.activeHold || this.transport.settings().mode !== "codex-transcription") return;
+    this.activeHold = press.actionId;
+    await this.transport.transcription(press.owner, 1);
+    press.transcriptionStarted = true;
+    if (press.released || !this.isCurrent(press)) {
+      await this.releaseTranscription(press);
+      return;
+    }
+    press.timer = this.clock.setTimeout(() => {
+      void this.up(press.actionId).catch((error) => this.transport.reportError(error));
+    }, LONG_PRESS_LEASE_MS);
+  }
+
+  private isCurrent(press: AgentPress): boolean {
+    return this.presses.get(press.actionId) === press && this.generations.get(press.actionId) === press.generation;
+  }
+
+  private async releaseTranscription(press: AgentPress): Promise<void> {
+    if (!press.transcriptionStarted) return;
+    press.transcriptionStarted = false;
+    try { await this.transport.transcription(press.owner, 0); }
+    finally { if (this.activeHold === press.actionId) this.activeHold = undefined; }
+  }
+
+  private discard(press: AgentPress): void {
+    if (!this.isCurrent(press)) return;
+    if (press.timer) this.clock.clearTimeout(press.timer);
+    this.presses.delete(press.actionId);
+  }
+}
+
 const USER_ICON_ROOT = join(codexDeckStateRoot(), "icons");
 const LOCAL_MOBILE_CONFIG = "mobile-local-relay-server.json";
 const RESET_HOLD_MS = 1_200;
+const LONG_PRESS_THRESHOLD_MS = 450;
+const LONG_PRESS_LEASE_MS = 60_000;
 
 export class DeckController {
   private readonly microBridge = new CodexMicroRendererBridge((message) => streamDeck.logger.info(message));
@@ -51,6 +231,14 @@ export class DeckController {
   private readonly usageOverviewActions = new Map<string, KeyAction>();
   private readonly rateLimitResetActions = new Map<string, KeyAction>();
   private readonly resetHolds = new Map<string, number>();
+  private readonly agentPresses = new AgentPressMachine({
+    settings: () => this.longPressSettings,
+    select: (owner) => this.sendToPinnedOwner(owner.host, { kind: "select-thread", threadKey: owner.threadKey! }),
+    transcription: (owner, act) => this.sendToPinnedOwner(owner.host, {
+      kind: "agent", slot: owner.sourceSlot, threadKey: owner.threadKey!, act
+    }),
+    reportError: (error) => streamDeck.logger.error(`Agent long-press failed: ${String(error)}`)
+  });
   private readonly activityIndex = new HostActivityIndex();
   private readonly pressedAgents = new Map<number, RoutedAgentSlot>();
   private readonly pressedControlTargets = new Map<string, string>();
@@ -75,12 +263,14 @@ export class DeckController {
   private lastAgentSourceSignature = "";
   private lastHostHealthSignature = "";
   private showContextRings = true;
+  private longPressSettings: ResolvedLongPressSettings = normalizeLongPressSettings(undefined);
 
   async start(): Promise<void> {
     this.stopped = false;
     try {
-      const settings = await streamDeck.settings.getGlobalSettings<ContextRingSettings>();
+      const settings = await streamDeck.settings.getGlobalSettings<ContextRingSettings & { longPress?: LongPressSettings }>();
       this.showContextRings = settings.showContextRings !== false;
+      this.longPressSettings = normalizeLongPressSettings(settings.longPress);
     } catch (error) {
       streamDeck.logger.warn(`Context-ring settings were unavailable; using enabled by default: ${String(error)}`);
     }
@@ -167,6 +357,7 @@ export class DeckController {
 
   stop(): void {
     this.stopped = true;
+    void this.agentPresses.stop().catch((error) => streamDeck.logger.error(`Agent long-press cleanup failed: ${String(error)}`));
     if (this.poll) clearInterval(this.poll);
     if (this.animation) clearInterval(this.animation);
     this.relayClient?.close();
@@ -181,6 +372,7 @@ export class DeckController {
   }
 
   unregisterAgent(action: ActionIdentity): void {
+    void this.cancelAgentPress(action.id).catch((error) => streamDeck.logger.error(`Agent long-press cleanup failed: ${String(error)}`));
     this.unregister(action, this.agents);
   }
 
@@ -188,6 +380,28 @@ export class DeckController {
     if (this.showContextRings === visible) return;
     this.showContextRings = visible;
     void Promise.all([...this.agents.values()].map((registration) => this.renderAgent(registration)));
+  }
+
+  setLongPressSettings(settings: LongPressSettings | undefined): void {
+    const next = normalizeLongPressSettings(settings);
+    if (JSON.stringify(next) === JSON.stringify(this.longPressSettings)) return;
+    this.longPressSettings = next;
+    this.agentPresses.updateSettings();
+  }
+
+  async beginAgentPress(actionId: string, slot: number): Promise<void> {
+    const assignment = this.routedSlots[slot];
+    if (!assignment) throw new Error(`No Codex task is assigned to global agent slot ${slot + 1}.`);
+    await this.agentPresses.down(actionId, assignment);
+  }
+
+  async endAgentPress(actionId: string): Promise<void> {
+    await this.agentPresses.up(actionId);
+    void this.refresh();
+  }
+
+  async cancelAgentPress(actionId: string): Promise<void> {
+    await this.agentPresses.cancel(actionId);
   }
 
   registerMicroAction(slot: MicroActionSlot, action: KeyAction): void {
