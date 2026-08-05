@@ -1,5 +1,6 @@
 import streamDeck from "@elgato/streamdeck";
 import { DeckController, type LongPressSettings } from "./controller.js";
+import type { AgentMode } from "./types.js";
 import {
   Agent1, Agent2, Agent3, Agent4, Agent5, Agent6,
   Approve, Back, Decline, Dictation, Fast, Fork, Forward, NewTask,
@@ -15,9 +16,10 @@ import {
 
 const controller = new DeckController();
 
-streamDeck.settings.onDidReceiveGlobalSettings<{ showContextRings?: boolean; longPress?: LongPressSettings }>((event) => {
+streamDeck.settings.onDidReceiveGlobalSettings<{ showContextRings?: boolean; longPress?: LongPressSettings; agentMode?: AgentMode }>((event) => {
   controller.setContextRingVisibility(event.settings.showContextRings !== false);
   controller.setLongPressSettings(event.settings.longPress);
+  controller.setAgentMode(event.settings.agentMode);
 });
 
 for (const pluginAction of [

@@ -179,6 +179,14 @@ test("the packaged plugin includes the standalone pi Otty state extension", asyn
   assert.match(build, /otty-pi-agent-state\.ts/);
 });
 
+test("agent inspector exposes an opt-in Otty source", async () => {
+  const inspector = await readFile(new URL("../static/property-inspector/agent.html", import.meta.url), "utf8");
+  const plugin = await readFile(new URL("../src/plugin.ts", import.meta.url), "utf8");
+  assert.match(inspector, /id="agent-mode"/);
+  assert.match(inspector, /value="otty"/);
+  assert.match(plugin, /setAgentMode/);
+});
+
 test("iPhone signing is portable and keeps personal identifiers out of source", async () => {
   const [project, config, ignore, script, appPlist, widgetPlist] = await Promise.all([
     readFile(new URL("../ios/CodexDeckMobile.xcodeproj/project.pbxproj", import.meta.url), "utf8"),

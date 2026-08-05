@@ -20,6 +20,14 @@
 </head>
 <body>
   <label>
+    <span>Agent source</span>
+    <select id="agent-mode">
+      <option value="codex">Codex Micro</option>
+      <option value="otty">Otty pi tabs</option>
+    </select>
+  </label>
+  <p>Otty mode maps Agent 1–6 to Otty tabs 1–6. Other keys remain Codex controls.</p>
+  <label>
     <span>Context ring</span>
     <input id="show-context-rings" type="checkbox" checked>
   </label>
@@ -66,6 +74,7 @@
         const event = JSON.parse(message.data);
         if (event.event !== "didReceiveGlobalSettings") return;
         globalSettings = event.payload?.settings ?? {};
+        document.getElementById("agent-mode").value = globalSettings.agentMode ?? "codex";
         document.getElementById("show-context-rings").checked = globalSettings.showContextRings !== false;
         const longPress = globalSettings.longPress ?? { mode: "codex-transcription" };
         document.getElementById("long-press-mode").value = longPress.mode ?? "codex-transcription";
@@ -102,6 +111,11 @@
       updateShortcutControls();
       sendGlobalSettings();
     };
+
+    document.getElementById("agent-mode").addEventListener("change", (event) => {
+      globalSettings = { ...globalSettings, agentMode: event.target.value };
+      sendGlobalSettings();
+    });
 
     document.getElementById("show-context-rings").addEventListener("change", (event) => {
       globalSettings = { ...globalSettings, showContextRings: event.target.checked };

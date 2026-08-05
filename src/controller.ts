@@ -9,6 +9,7 @@ import {
 import { CodexRelayClient, readRelayClientConfig } from "./codex-relay-client.js";
 import { CodexRelayServer, readRelayServerConfig } from "./codex-relay-server.js";
 import { CodexMicroRendererBridge } from "./codex-micro-renderer-bridge.js";
+import { focusOttyTab, readOttyAgentSlots, type OttyAgentSlot } from "./otty.js";
 import { getOrCreateHostIdentity } from "./host-identity.js";
 import type { OfficialKeycapId } from "./keycaps.js";
 import {
@@ -23,7 +24,7 @@ import {
 import { openCodexThread } from "./codex-open.js";
 import { visualStatusFromMicro } from "./status.js";
 import type {
-  CodexHost, HostHealth, MicroActionSlot, MicroDirection, MicroSnapshot, ReasoningAdjustment,
+  AgentMode, CodexHost, HostHealth, MicroActionSlot, MicroDirection, MicroSnapshot, ReasoningAdjustment,
   RoutedAgentSlot, UsageLimitMode, UsageWindowKind
 } from "./types.js";
 import { selectAccountUsageSource, selectUsageWindow, type AccountUsageSource } from "./usage.js";
@@ -37,7 +38,7 @@ type AgentRegistration = { action: KeyAction; slot: number };
 type MicroActionRegistration = { action: KeyAction; slot: MicroActionSlot };
 type UsageLimitRegistration = { action: KeyAction; mode: UsageLimitMode };
 type ActionIdentity = { id: string };
-type ContextRingSettings = { showContextRings?: boolean };
+type ContextRingSettings = { showContextRings?: boolean; agentMode?: AgentMode };
 
 export type LongPressMode = "off" | "codex-transcription" | "macos-shortcut";
 export type MacosShortcutModifier = MacosModifier;
@@ -315,6 +316,8 @@ export class DeckController {
   private localHost?: CodexHost;
   private localSnapshot?: HostSnapshot;
   private routedSlots: RoutedAgentSlot[] = [];
+  private ottySlots: Array<OttyAgentSlot | undefined> = [];
+  private agentMode: AgentMode = "codex";
   private targetHostId?: string;
   private targetPlatform: ControlTarget = "win32";
   private localHealth: HostHealth = { state: "connecting", reason: "awaiting-snapshot", changedAt: Date.now() };
@@ -339,6 +342,7 @@ export class DeckController {
       const settings = await streamDeck.settings.getGlobalSettings<ContextRingSettings & { longPress?: LongPressSettings }>();
       this.showContextRings = settings.showContextRings !== false;
       this.longPressSettings = normalizeLongPressSettings(settings.longPress);
+      this.agentMode = settings.agentMode === "otty" ? "otty" : "codex";
     } catch (error) {
       streamDeck.logger.warn(`Context-ring settings were unavailable; using enabled by default: ${String(error)}`);
     }
@@ -461,6 +465,13 @@ export class DeckController {
     void Promise.all([...this.agents.values()].map((registration) => this.renderAgent(registration)));
   }
 
+  setAgentMode(mode: AgentMode | undefined): void {
+    const next: AgentMode = mode === "otty" ? "otty" : "codex";
+    if (next === this.agentMode) return;
+    this.agentMode = next;
+    void this.refresh();
+  }
+
   setLongPressSettings(settings: LongPressSettings | undefined): void {
     const next = normalizeLongPressSettings(settings);
     if (JSON.stringify(next) === JSON.stringify(this.longPressSettings)) return;
@@ -492,12 +503,18 @@ export class DeckController {
   }
 
   async beginAgentPress(actionId: string, slot: number): Promise<void> {
+    if (this.agentMode === "otty") {
+      const tab = this.ottySlots[slot];
+      if (tab) await focusOttyTab(tab.tabId);
+      return;
+    }
     const assignment = this.routedSlots[slot];
     if (!assignment) throw new Error(`No Codex task is assigned to global agent slot ${slot + 1}.`);
     await this.agentPresses.down(actionId, assignment);
   }
 
   async endAgentPress(actionId: string): Promise<void> {
+    if (this.agentMode === "otty") return;
     await this.agentPresses.up(actionId);
     void this.refresh();
   }
@@ -654,6 +671,19 @@ export class DeckController {
   }
 
   private async refreshOnce(): Promise<void> {
+    if (this.agentMode === "otty") {
+      try {
+        this.ottySlots = await readOttyAgentSlots();
+        this.lastError = "";
+      } catch (error) {
+        this.ottySlots = [];
+        const message = String(error);
+        if (message !== this.lastError) streamDeck.logger.warn(`Otty agent tabs unavailable: ${message}`);
+        this.lastError = message;
+      }
+      await this.renderAll();
+      return;
+    }
     try {
       const snapshot = await this.microBridge.refresh();
       this.localHost = await getOrCreateHostIdentity();
@@ -733,6 +763,13 @@ export class DeckController {
   }
 
   private async renderAgent({ action, slot }: AgentRegistration): Promise<void> {
+    if (this.agentMode === "otty") {
+      const tab = this.ottySlots[slot];
+      await this.setImage(action, renderAgentKey(
+        slot, tab?.title ?? "Not assigned", tab?.status ?? "empty", tab?.selected ?? false,
+        this.animationFrame, "dark", undefined, "ready", undefined, false));
+      return;
+    }
     const agent = this.routedSlots[slot];
     const health = agent ? this.healthForHost(agent.host) : this.targetHealth();
     const unavailableTitle = health.state === "degraded" ? "Signals uncertain"
@@ -749,7 +786,7 @@ export class DeckController {
 
   private async renderAnimatedAgents(): Promise<void> {
     const registrations = [...this.agents.values()].filter(({ slot }) => {
-      const agent = this.routedSlots[slot];
+      const agent = this.agentMode === "otty" ? this.ottySlots[slot] : this.routedSlots[slot];
       if (!agent) return false;
       const status = visualStatusFromMicro(agent.status);
       return status === "thinking" || status === "input";

@@ -1,4 +1,5 @@
 export type AgentVisualStatus = "empty" | "idle" | "thinking" | "complete" | "input" | "error";
+export type AgentMode = "codex" | "otty";
 export type ThemeMode = "light" | "dark";
 export type HostHealthState = "ready" | "degraded" | "offline" | "connecting";
 export type UsageLimitMode = "auto" | "five-hour" | "weekly";
