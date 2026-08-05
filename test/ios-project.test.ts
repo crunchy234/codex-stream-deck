@@ -187,6 +187,16 @@ test("agent inspector exposes an opt-in Otty source", async () => {
   assert.match(plugin, /setAgentMode/);
 });
 
+test("manifest and README describe Otty pi agent tabs", async () => {
+  const [manifest, readme] = await Promise.all([
+    readFile(new URL("../static/manifest.json", import.meta.url), "utf8"),
+    readFile(new URL("../README.md", import.meta.url), "utf8")
+  ]);
+  assert.match(manifest, /Otty pi tab/);
+  assert.match(readme, /otty-pi-agent-state\.ts/);
+  assert.match(readme, /Agent source/);
+});
+
 test("iPhone signing is portable and keeps personal identifiers out of source", async () => {
   const [project, config, ignore, script, appPlist, widgetPlist] = await Promise.all([
     readFile(new URL("../ios/CodexDeckMobile.xcodeproj/project.pbxproj", import.meta.url), "utf8"),

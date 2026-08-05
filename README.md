@@ -37,6 +37,10 @@ Windows-only and Mac-only mode have no relay, no second computer dependency, and
 - Per-host health on the Windows/Mac target key, with last-known agent tiles visibly marked when native desktop signals are uncertain or the relay is offline.
 - Native SwiftUI iPhone companion with dual-host agents, usage, reset credits, and authenticated Micro controls over pinned-TLS Nearby Wi-Fi or private Tailscale HTTPS.
 
+### Otty pi agent tabs (macOS)
+
+To map **Agent 1–6** to Otty tabs 1–6, copy the packaged `extensions/otty-pi-agent-state.ts` to `~/.pi/agent/extensions/`, run `/reload` (or restart pi), then set **Agent source** to **Otty pi tabs** in an Agent key’s property inspector. Pi sessions outside Otty and tabs without pi render as empty. This integration uses Otty's supported CLI; it does not modify Otty.app.
+
 ## Requirements
 
 - Codex desktop on the computer being controlled.
