@@ -468,6 +468,7 @@ export class DeckController {
   setAgentMode(mode: AgentMode | undefined): void {
     const next: AgentMode = mode === "otty" ? "otty" : "codex";
     if (next === this.agentMode) return;
+    this.agentPresses.updateSettings();
     this.agentMode = next;
     void this.refresh();
   }

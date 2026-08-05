@@ -180,11 +180,15 @@ test("the packaged plugin includes the standalone pi Otty state extension", asyn
 });
 
 test("agent inspector exposes an opt-in Otty source", async () => {
-  const inspector = await readFile(new URL("../static/property-inspector/agent.html", import.meta.url), "utf8");
-  const plugin = await readFile(new URL("../src/plugin.ts", import.meta.url), "utf8");
+  const [inspector, plugin, controller] = await Promise.all([
+    readFile(new URL("../static/property-inspector/agent.html", import.meta.url), "utf8"),
+    readFile(new URL("../src/plugin.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/controller.ts", import.meta.url), "utf8")
+  ]);
   assert.match(inspector, /id="agent-mode"/);
   assert.match(inspector, /value="otty"/);
   assert.match(plugin, /setAgentMode/);
+  assert.match(controller, /setAgentMode[\s\S]*agentPresses\.updateSettings\(\)/);
 });
 
 test("manifest and README describe Otty pi agent tabs", async () => {
