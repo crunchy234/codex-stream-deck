@@ -170,6 +170,15 @@ test("iPhone schedules a bounded background refresh for shared widget snapshots"
   assert.match(connection, /stop\(publishOffline: Bool = true\)/);
 });
 
+test("the packaged plugin includes the standalone pi Otty state extension", async () => {
+  const source = await readFile(new URL("../extensions/otty-pi-agent-state.ts", import.meta.url), "utf8");
+  const build = await readFile(new URL("../scripts/build.mjs", import.meta.url), "utf8");
+  assert.match(source, /OTTY_PANE_ID/);
+  assert.match(source, /agent_settled/);
+  assert.match(source, /otty-pi/);
+  assert.match(build, /otty-pi-agent-state\.ts/);
+});
+
 test("iPhone signing is portable and keeps personal identifiers out of source", async () => {
   const [project, config, ignore, script, appPlist, widgetPlist] = await Promise.all([
     readFile(new URL("../ios/CodexDeckMobile.xcodeproj/project.pbxproj", import.meta.url), "utf8"),
