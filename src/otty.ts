@@ -21,6 +21,10 @@ export type OttyOptions = {
   alive?: (pid: number) => boolean;
 };
 
+function paneId(value: string): string {
+  return value.startsWith("p_") ? value.slice(2) : value;
+}
+
 function validRecord(value: unknown): value is PiRecord {
   const item = value as Partial<PiRecord> | null;
   return item?.version === 1 && typeof item.paneId === "string" && typeof item.pid === "number"
@@ -38,12 +42,13 @@ export function joinOttyAgentSlots(
       tabPanes = new Set();
       panesByTab.set(pane.tab_id, tabPanes);
     }
-    tabPanes.add(pane.id);
+    tabPanes.add(paneId(pane.id));
   }
   const liveByPane = new Map<string, PiRecord>();
   for (const record of records.filter((record) => alive(record.pid))) {
-    const current = liveByPane.get(record.paneId);
-    if (!current || current.updatedAt < record.updatedAt) liveByPane.set(record.paneId, record);
+    const id = paneId(record.paneId);
+    const current = liveByPane.get(id);
+    if (!current || current.updatedAt < record.updatedAt) liveByPane.set(id, record);
   }
   const slots: Array<OttyAgentSlot | undefined> = Array.from({ length: 6 });
   for (const tab of tabs) {

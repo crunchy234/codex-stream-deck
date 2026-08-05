@@ -26,6 +26,16 @@ test("maps Otty tab indexes zero through five to agent keys one through six", ()
   ]);
 });
 
+test("joins OTTY_PANE_ID records to Otty's p_-prefixed pane ids", () => {
+  const slots = joinOttyAgentSlots(
+    [{ id: "tab-1", index: 0, title: "one", active: false }],
+    [{ id: "p_19f87bf466e_2", tab_id: "tab-1" }],
+    [{ version: 1, paneId: "19f87bf466e_2", pid: 101, sessionId: "a", cwd: "/a", state: "idle", updatedAt: 1 }],
+    () => true
+  );
+  assert.equal(slots[0]?.status, "complete");
+});
+
 test("ignores stale, non-pi, and tabs after the sixth", () => {
   const slots = joinOttyAgentSlots(
     [...tabs, ...Array.from({ length: 5 }, (_, offset) => ({ id: `extra-${offset}`, index: offset + 3, title: "extra", active: false }))],
