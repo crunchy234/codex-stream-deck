@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { visualStatusFromMicro } from "../src/status.js";
+import { visualStatusFromMicro, visualStatusFromOtty } from "../src/status.js";
+
+test("Otty pi states map to the Stream Deck status palette", () => {
+  assert.equal(visualStatusFromOtty("processing"), "thinking");
+  assert.equal(visualStatusFromOtty("idle"), "complete");
+  assert.equal(visualStatusFromOtty("awaiting"), "input");
+  assert.equal(visualStatusFromOtty("unknown"), "empty");
+});
 
 test("native Micro states map to the Stream Deck status palette", () => {
   assert.equal(visualStatusFromMicro("off"), "empty");
