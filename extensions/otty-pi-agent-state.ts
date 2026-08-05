@@ -7,9 +7,15 @@ type State = "processing" | "idle" | "awaiting";
 const directory = join(homedir(), "Library", "Application Support", "CodexDeck", "otty-pi");
 const path = join(directory, `${process.pid}.json`);
 
+function contextUsedPercent(ctx: any): number | undefined {
+  const percent = ctx.getContextUsage?.()?.percent;
+  return typeof percent === "number" && Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : undefined;
+}
+
 async function publish(state: State, ctx: any): Promise<void> {
   const paneId = process.env.OTTY_PANE_ID;
   if (!paneId) return;
+  const percent = contextUsedPercent(ctx);
   const value = JSON.stringify({
     version: 1,
     paneId,
@@ -17,7 +23,8 @@ async function publish(state: State, ctx: any): Promise<void> {
     sessionId: String(ctx.sessionManager.getSessionId()),
     cwd: String(ctx.cwd),
     state,
-    updatedAt: Date.now()
+    updatedAt: Date.now(),
+    ...(percent != null ? { contextUsedPercent: percent } : {})
   }) + "\n";
   await mkdir(directory, { recursive: true });
   const temporary = `${path}.${Date.now()}.tmp`;

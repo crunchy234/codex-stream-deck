@@ -26,6 +26,16 @@ test("maps Otty tab indexes zero through five to agent keys one through six", ()
   ]);
 });
 
+test("preserves a valid pi context percentage for the existing ring", () => {
+  const slots = joinOttyAgentSlots(
+    [{ id: "tab-1", index: 0, title: "one", active: false }],
+    [{ id: "pane-1", tab_id: "tab-1" }],
+    [{ version: 1, paneId: "pane-1", pid: 101, sessionId: "a", cwd: "/a", state: "idle", updatedAt: 1, contextUsedPercent: 42 }],
+    () => true
+  );
+  assert.equal(slots[0]?.contextUsedPercent, 42);
+});
+
 test("joins OTTY_PANE_ID records to Otty's p_-prefixed pane ids", () => {
   const slots = joinOttyAgentSlots(
     [{ id: "tab-1", index: 0, title: "one", active: false }],

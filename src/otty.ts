@@ -11,9 +11,9 @@ const defaultCli = "/Applications/Otty.app/Contents/MacOS/otty-cli";
 
 type Tab = { id: string; index: number; title: string; active: boolean };
 type Pane = { id: string; tab_id: string };
-type PiRecord = { version: 1; paneId: string; pid: number; sessionId: string; cwd: string; state: string; updatedAt: number };
+type PiRecord = { version: 1; paneId: string; pid: number; sessionId: string; cwd: string; state: string; updatedAt: number; contextUsedPercent?: number };
 
-export type OttyAgentSlot = { tabId: string; title: string; status: AgentVisualStatus; selected: boolean };
+export type OttyAgentSlot = { tabId: string; title: string; status: AgentVisualStatus; selected: boolean; contextUsedPercent?: number };
 export type OttyOptions = {
   cli?: string;
   stateDirectory?: string;
@@ -23,6 +23,10 @@ export type OttyOptions = {
 
 function paneId(value: string): string {
   return value.startsWith("p_") ? value.slice(2) : value;
+}
+
+function contextUsedPercent(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100 ? value : undefined;
 }
 
 function validRecord(value: unknown): value is PiRecord {
@@ -55,11 +59,13 @@ export function joinOttyAgentSlots(
     if (tab.index < 0 || tab.index >= slots.length) continue;
     const record = [...(panesByTab.get(tab.id) ?? [])].map((paneId) => liveByPane.get(paneId)).find(Boolean);
     if (record) {
+      const percent = contextUsedPercent(record.contextUsedPercent);
       slots[tab.index] = {
         tabId: tab.id,
         title: tab.title || `Tab ${tab.index + 1}`,
         status: visualStatusFromOtty(record.state),
-        selected: tab.active
+        selected: tab.active,
+        ...(percent != null ? { contextUsedPercent: percent } : {})
       };
     }
   }

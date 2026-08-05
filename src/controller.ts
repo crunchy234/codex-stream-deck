@@ -768,7 +768,7 @@ export class DeckController {
       const tab = this.ottySlots[slot];
       await this.setImage(action, renderAgentKey(
         slot, tab?.title ?? "Not assigned", tab?.status ?? "empty", tab?.selected ?? false,
-        this.animationFrame, "dark", undefined, "ready", undefined, false));
+        this.animationFrame, "dark", undefined, "ready", tab?.contextUsedPercent, this.showContextRings));
       return;
     }
     const agent = this.routedSlots[slot];
