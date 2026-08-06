@@ -12,7 +12,7 @@ function contextUsedPercent(ctx: any): number | undefined {
   return typeof percent === "number" && Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : undefined;
 }
 
-async function publish(state: State, ctx: any): Promise<void> {
+async function publish(state: State, ctx: any, completionAt?: number): Promise<void> {
   const paneId = process.env.OTTY_PANE_ID;
   if (!paneId) return;
   const percent = contextUsedPercent(ctx);
@@ -24,7 +24,8 @@ async function publish(state: State, ctx: any): Promise<void> {
     cwd: String(ctx.cwd),
     state,
     updatedAt: Date.now(),
-    ...(percent != null ? { contextUsedPercent: percent } : {})
+    ...(percent != null ? { contextUsedPercent: percent } : {}),
+    ...(completionAt != null ? { completionAt } : {})
   }) + "\n";
   await mkdir(directory, { recursive: true });
   const temporary = `${path}.${Date.now()}.tmp`;
@@ -36,6 +37,6 @@ export default function (pi: any): void {
   pi.on("session_start", (_event: unknown, ctx: any) => publish("idle", ctx).catch(() => {}));
   pi.on("before_agent_start", (_event: unknown, ctx: any) => publish("processing", ctx).catch(() => {}));
   pi.on("tool_call", (_event: unknown, ctx: any) => publish("processing", ctx).catch(() => {}));
-  pi.on("agent_settled", (_event: unknown, ctx: any) => publish("idle", ctx).catch(() => {}));
+  pi.on("agent_settled", (_event: unknown, ctx: any) => publish("idle", ctx, Date.now()).catch(() => {}));
   pi.on("session_shutdown", () => rm(path, { force: true }).catch(() => {}));
 }

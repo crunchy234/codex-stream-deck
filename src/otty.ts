@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { codexDeckStateRoot } from "./codex-deck-paths.js";
 import { visualStatusFromOtty } from "./status.js";
@@ -8,12 +8,13 @@ import type { AgentVisualStatus } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 const defaultCli = "/Applications/Otty.app/Contents/MacOS/otty-cli";
+const receiptsPath = join(codexDeckStateRoot(), "otty-pi-read-receipts.json");
 
 type Tab = { id: string; index: number; title: string; active: boolean };
 type Pane = { id: string; tab_id: string };
-type PiRecord = { version: 1; paneId: string; pid: number; sessionId: string; cwd: string; state: string; updatedAt: number; contextUsedPercent?: number };
+type PiRecord = { version: 1; paneId: string; pid: number; sessionId: string; cwd: string; state: string; updatedAt: number; contextUsedPercent?: number; completionAt?: number };
 
-export type OttyAgentSlot = { tabId: string; title: string; status: AgentVisualStatus; selected: boolean; contextUsedPercent?: number };
+export type OttyAgentSlot = { tabId: string; paneId: string; title: string; status: AgentVisualStatus; selected: boolean; contextUsedPercent?: number; completionAt?: number };
 export type OttyOptions = {
   cli?: string;
   stateDirectory?: string;
@@ -27,6 +28,10 @@ function paneId(value: string): string {
 
 function contextUsedPercent(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100 ? value : undefined;
+}
+
+function completionAt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function validRecord(value: unknown): value is PiRecord {
@@ -60,16 +65,38 @@ export function joinOttyAgentSlots(
     const record = [...(panesByTab.get(tab.id) ?? [])].map((paneId) => liveByPane.get(paneId)).find(Boolean);
     if (record) {
       const percent = contextUsedPercent(record.contextUsedPercent);
+      const completed = completionAt(record.completionAt);
       slots[tab.index] = {
         tabId: tab.id,
+        paneId: paneId(record.paneId),
         title: tab.title || `Tab ${tab.index + 1}`,
         status: visualStatusFromOtty(record.state),
         selected: tab.active,
-        ...(percent != null ? { contextUsedPercent: percent } : {})
+        ...(percent != null ? { contextUsedPercent: percent } : {}),
+        ...(completed != null ? { completionAt: completed } : {})
       };
     }
   }
   return slots;
+}
+
+export function applyOttyReadReceipts(
+  slots: Array<OttyAgentSlot | undefined>, receipts: Record<string, number>, ottyForeground: boolean
+): { slots: Array<OttyAgentSlot | undefined>; receipts: Record<string, number>; changed: boolean } {
+  const nextReceipts = { ...receipts };
+  let changed = false;
+  for (const slot of slots) {
+    if (slot?.selected && ottyForeground && slot.completionAt != null && (nextReceipts[slot.paneId] ?? 0) < slot.completionAt) {
+      nextReceipts[slot.paneId] = slot.completionAt;
+      changed = true;
+    }
+  }
+  return {
+    slots: slots.map((slot) => slot && slot.status === "idle" && slot.completionAt != null && (nextReceipts[slot.paneId] ?? 0) < slot.completionAt
+      ? { ...slot, status: "complete" } : slot),
+    receipts: nextReceipts,
+    changed
+  };
 }
 
 export async function readOttyAgentSlots(options: OttyOptions = {}): Promise<Array<OttyAgentSlot | undefined>> {
@@ -99,6 +126,34 @@ export async function readOttyAgentSlots(options: OttyOptions = {}): Promise<Arr
     }
   });
   return joinOttyAgentSlots(tabs, panes, records.filter((record): record is PiRecord => record != null), alive);
+}
+
+export async function readOttyReadReceipts(path = receiptsPath): Promise<Record<string, number>> {
+  try {
+    const value: unknown = JSON.parse(await readFile(path, "utf8"));
+    if (!value || Array.isArray(value) || typeof value !== "object") return {};
+    return Object.fromEntries(Object.entries(value).filter(([, timestamp]) =>
+      typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp >= 0));
+  } catch {
+    return {};
+  }
+}
+
+export async function writeOttyReadReceipts(receipts: Record<string, number>, path = receiptsPath): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const temporary = `${path}.${Date.now()}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(receipts)}\n`, { encoding: "utf8", mode: 0o600 });
+  await rename(temporary, path);
+}
+
+export async function isOttyForeground(
+  run: (args: string[]) => Promise<string> = async (args) => (await execFileAsync("/usr/bin/osascript", args, { timeout: 3000 })).stdout
+): Promise<boolean> {
+  try {
+    return (await run(["-e", 'tell application "System Events" to get name of first application process whose frontmost is true'])).trim() === "Otty";
+  } catch {
+    return false;
+  }
 }
 
 export async function focusOttyTab(tabId: string, options: OttyOptions = {}): Promise<void> {

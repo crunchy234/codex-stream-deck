@@ -4,7 +4,7 @@ import { visualStatusFromMicro, visualStatusFromOtty } from "../src/status.js";
 
 test("Otty pi states map to the Stream Deck status palette", () => {
   assert.equal(visualStatusFromOtty("processing"), "thinking");
-  assert.equal(visualStatusFromOtty("idle"), "complete");
+  assert.equal(visualStatusFromOtty("idle"), "idle");
   assert.equal(visualStatusFromOtty("awaiting"), "input");
   assert.equal(visualStatusFromOtty("unknown"), "empty");
 });

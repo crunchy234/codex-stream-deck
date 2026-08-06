@@ -9,7 +9,7 @@ import {
 import { CodexRelayClient, readRelayClientConfig } from "./codex-relay-client.js";
 import { CodexRelayServer, readRelayServerConfig } from "./codex-relay-server.js";
 import { CodexMicroRendererBridge } from "./codex-micro-renderer-bridge.js";
-import { focusOttyTab, readOttyAgentSlots, type OttyAgentSlot } from "./otty.js";
+import { applyOttyReadReceipts, focusOttyTab, isOttyForeground, readOttyAgentSlots, readOttyReadReceipts, writeOttyReadReceipts, type OttyAgentSlot } from "./otty.js";
 import { getOrCreateHostIdentity } from "./host-identity.js";
 import type { OfficialKeycapId } from "./keycaps.js";
 import {
@@ -317,6 +317,7 @@ export class DeckController {
   private localSnapshot?: HostSnapshot;
   private routedSlots: RoutedAgentSlot[] = [];
   private ottySlots: Array<OttyAgentSlot | undefined> = [];
+  private ottyReadReceipts: Record<string, number> = {};
   private agentMode: AgentMode = "codex";
   private targetHostId?: string;
   private targetPlatform: ControlTarget = "win32";
@@ -346,6 +347,7 @@ export class DeckController {
     } catch (error) {
       streamDeck.logger.warn(`Context-ring settings were unavailable; using enabled by default: ${String(error)}`);
     }
+    if (this.agentMode === "otty") this.ottyReadReceipts = await readOttyReadReceipts();
     this.localHost = await getOrCreateHostIdentity();
     const persistedTarget = await readControlTarget(undefined, this.localHost.platform);
     const relayConfig = await readRelayClientConfig();
@@ -675,6 +677,16 @@ export class DeckController {
     if (this.agentMode === "otty") {
       try {
         this.ottySlots = await readOttyAgentSlots();
+        const receiptUpdate = applyOttyReadReceipts(this.ottySlots, this.ottyReadReceipts, await isOttyForeground());
+        if (receiptUpdate.changed) {
+          try {
+            await writeOttyReadReceipts(receiptUpdate.receipts);
+            this.ottyReadReceipts = receiptUpdate.receipts;
+          } catch (error) {
+            streamDeck.logger.warn(`Otty unread receipt was not saved: ${String(error)}`);
+          }
+        }
+        this.ottySlots = applyOttyReadReceipts(this.ottySlots, this.ottyReadReceipts, false).slots;
         this.lastError = "";
       } catch (error) {
         this.ottySlots = [];

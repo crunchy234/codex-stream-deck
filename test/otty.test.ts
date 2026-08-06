@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { focusOttyTab, joinOttyAgentSlots } from "../src/otty.js";
+import { applyOttyReadReceipts, focusOttyTab, isOttyForeground, joinOttyAgentSlots, readOttyReadReceipts, writeOttyReadReceipts } from "../src/otty.js";
 
 const tabs = [
   { id: "tab-1", index: 0, title: "one", active: false },
@@ -20,10 +23,19 @@ test("maps Otty tab indexes zero through five to agent keys one through six", ()
     { version: 1, paneId: "pane-2b", pid: 102, sessionId: "b", cwd: "/b", state: "idle", updatedAt: 1 }
   ], (pid) => pid >= 101);
   assert.deepEqual(slots, [
-    { tabId: "tab-1", title: "one", status: "thinking", selected: false },
-    { tabId: "tab-2", title: "two", status: "complete", selected: true },
+    { tabId: "tab-1", paneId: "pane-1", title: "one", status: "thinking", selected: false },
+    { tabId: "tab-2", paneId: "pane-2b", title: "two", status: "idle", selected: true },
     undefined, undefined, undefined, undefined
   ]);
+});
+
+test("marks only a newer, unread completion as complete", () => {
+  const slots = [{ tabId: "tab-1", paneId: "pane-1", title: "one", status: "idle" as const, selected: false, completionAt: 101 }];
+  const unread = applyOttyReadReceipts(slots, { "pane-1": 100 }, false);
+  assert.equal(unread.slots[0]?.status, "complete");
+  const read = applyOttyReadReceipts([{ ...slots[0]!, selected: true }], { "pane-1": 100 }, true);
+  assert.equal(read.slots[0]?.status, "idle");
+  assert.equal(read.receipts["pane-1"], 101);
 });
 
 test("preserves a valid pi context percentage for the existing ring", () => {
@@ -43,7 +55,7 @@ test("joins OTTY_PANE_ID records to Otty's p_-prefixed pane ids", () => {
     [{ version: 1, paneId: "19f87bf466e_2", pid: 101, sessionId: "a", cwd: "/a", state: "idle", updatedAt: 1 }],
     () => true
   );
-  assert.equal(slots[0]?.status, "complete");
+  assert.equal(slots[0]?.status, "idle");
 });
 
 test("ignores stale, non-pi, and tabs after the sixth", () => {
@@ -54,6 +66,24 @@ test("ignores stale, non-pi, and tabs after the sixth", () => {
     () => false
   );
   assert.deepEqual(slots, [undefined, undefined, undefined, undefined, undefined, undefined]);
+});
+
+test("persists Otty read receipts and ignores a malformed file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "otty-receipts-"));
+  const path = join(directory, "receipts.json");
+  try {
+    assert.deepEqual(await readOttyReadReceipts(path), {});
+    await writeOttyReadReceipts({ "pane-1": 101 }, path);
+    assert.deepEqual(await readOttyReadReceipts(path), { "pane-1": 101 });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("recognizes Otty only when it is the foreground app", async () => {
+  assert.equal(await isOttyForeground(async () => "Otty\n"), true);
+  assert.equal(await isOttyForeground(async () => "Finder\n"), false);
+  assert.equal(await isOttyForeground(async () => { throw new Error("denied"); }), false);
 });
 
 test("focuses an Otty tab by its stable id", async () => {

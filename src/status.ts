@@ -2,7 +2,7 @@ import type { AgentVisualStatus } from "./types.js";
 
 export function visualStatusFromOtty(state: string): AgentVisualStatus {
   if (state === "processing") return "thinking";
-  if (state === "idle") return "complete";
+  if (state === "idle") return "idle";
   if (state === "awaiting") return "input";
   return "empty";
 }
