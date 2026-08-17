@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 const defaultCli = "/Applications/Otty.app/Contents/MacOS/otty-cli";
 const receiptsPath = join(codexDeckStateRoot(), "otty-pi-read-receipts.json");
 
-type Tab = { id: string; index: number; title: string; active: boolean };
+type Tab = { id: string; index: number; title: string; active: boolean; badge?: string };
 type Pane = { id: string; tab_id: string };
 type PiRecord = { version: 1; paneId: string; pid: number; sessionId: string; cwd: string; state: string; updatedAt: number; contextUsedPercent?: number; completionAt?: number };
 
@@ -66,11 +66,12 @@ export function joinOttyAgentSlots(
     if (record) {
       const percent = contextUsedPercent(record.contextUsedPercent);
       const completed = completionAt(record.completionAt);
+      const status = visualStatusFromOtty(record.state);
       slots[tab.index] = {
         tabId: tab.id,
         paneId: paneId(record.paneId),
         title: tab.title || `Tab ${tab.index + 1}`,
-        status: visualStatusFromOtty(record.state),
+        status: status === "idle" && (tab.badge === "unread" || tab.badge === "finished") ? "complete" : status,
         selected: tab.active,
         ...(percent != null ? { contextUsedPercent: percent } : {}),
         ...(completed != null ? { completionAt: completed } : {})
@@ -78,6 +79,13 @@ export function joinOttyAgentSlots(
     }
   }
   return slots;
+}
+
+export function applyOttyManualUnread(
+  slots: Array<OttyAgentSlot | undefined>, tabIds: ReadonlySet<string>
+): Array<OttyAgentSlot | undefined> {
+  return slots.map((slot) => slot && slot.status === "idle" && tabIds.has(slot.tabId)
+    ? { ...slot, status: "complete" } : slot);
 }
 
 export function applyOttyReadReceipts(
@@ -164,4 +172,15 @@ export async function focusOttyTab(tabId: string, options: OttyOptions = {}): Pr
     return;
   }
   await execFileAsync(cli, ["tab", "focus", tabId], { timeout: 3000 });
+}
+
+export async function markOttyTabUnread(tabId: string, options: OttyOptions = {}): Promise<void> {
+  if (process.platform !== "darwin") throw new Error("Otty agent tabs require macOS.");
+  const cli = options.cli ?? process.env.OTTY_CLI ?? defaultCli;
+  const args = ["tab", "badge", "--tab", tabId, "--kind", "unread"];
+  if (options.run) {
+    await options.run(args);
+    return;
+  }
+  await execFileAsync(cli, args, { timeout: 3000 });
 }

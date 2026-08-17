@@ -9,7 +9,7 @@ import {
 import { CodexRelayClient, readRelayClientConfig } from "./codex-relay-client.js";
 import { CodexRelayServer, readRelayServerConfig } from "./codex-relay-server.js";
 import { CodexMicroRendererBridge } from "./codex-micro-renderer-bridge.js";
-import { applyOttyReadReceipts, focusOttyTab, isOttyForeground, readOttyAgentSlots, readOttyReadReceipts, writeOttyReadReceipts, type OttyAgentSlot } from "./otty.js";
+import { applyOttyManualUnread, applyOttyReadReceipts, focusOttyTab, isOttyForeground, markOttyTabUnread, readOttyAgentSlots, readOttyReadReceipts, writeOttyReadReceipts, type OttyAgentSlot } from "./otty.js";
 import { getOrCreateHostIdentity } from "./host-identity.js";
 import type { OfficialKeycapId } from "./keycaps.js";
 import {
@@ -309,6 +309,7 @@ export class DeckController {
   });
   private readonly activityIndex = new HostActivityIndex();
   private readonly pressedAgents = new Map<number, RoutedAgentSlot>();
+  private readonly ottyPresses = new Map<string, { tabId: string; timer: NodeJS.Timeout }>();
   private readonly pressedControlTargets = new Map<string, string>();
   private relayClient?: CodexRelayClient;
   private mobileRelayServer?: CodexRelayServer;
@@ -318,6 +319,7 @@ export class DeckController {
   private routedSlots: RoutedAgentSlot[] = [];
   private ottySlots: Array<OttyAgentSlot | undefined> = [];
   private ottyReadReceipts: Record<string, number> = {};
+  private readonly ottyManualUnread = new Set<string>();
   private agentMode: AgentMode = "codex";
   private targetHostId?: string;
   private targetPlatform: ControlTarget = "win32";
@@ -438,6 +440,9 @@ export class DeckController {
     } catch (error) {
       streamDeck.logger.error(`Agent long-press cleanup failed: ${String(error)}`);
     }
+    for (const press of this.ottyPresses?.values() ?? []) clearTimeout(press.timer);
+    this.ottyPresses?.clear();
+    this.ottyManualUnread?.clear();
     if (this.macosShortcutHandle) {
       try {
         await this.stopMacosShortcut();
@@ -508,7 +513,20 @@ export class DeckController {
   async beginAgentPress(actionId: string, slot: number): Promise<void> {
     if (this.agentMode === "otty") {
       const tab = this.ottySlots[slot];
-      if (tab) await focusOttyTab(tab.tabId);
+      if (!tab) return;
+      await focusOttyTab(tab.tabId);
+      this.ottyManualUnread.delete(tab.tabId);
+      void this.refresh();
+      const timer = setTimeout(() => {
+        const press = this.ottyPresses.get(actionId);
+        if (!press) return;
+        this.ottyPresses.delete(actionId);
+        void markOttyTabUnread(press.tabId).then(() => {
+          this.ottyManualUnread.add(press.tabId);
+          void this.refresh();
+        }).catch((error) => streamDeck.logger.error(`Otty unread mark failed: ${String(error)}`));
+      }, LONG_PRESS_THRESHOLD_MS);
+      this.ottyPresses.set(actionId, { tabId: tab.tabId, timer });
       return;
     }
     const assignment = this.routedSlots[slot];
@@ -517,12 +535,20 @@ export class DeckController {
   }
 
   async endAgentPress(actionId: string): Promise<void> {
-    if (this.agentMode === "otty") return;
+    if (this.agentMode === "otty") {
+      const press = this.ottyPresses.get(actionId);
+      if (press) clearTimeout(press.timer);
+      this.ottyPresses.delete(actionId);
+      return;
+    }
     await this.agentPresses.up(actionId);
     void this.refresh();
   }
 
   async cancelAgentPress(actionId: string): Promise<void> {
+    const press = this.ottyPresses.get(actionId);
+    if (press) clearTimeout(press.timer);
+    this.ottyPresses.delete(actionId);
     await this.agentPresses.cancel(actionId);
   }
 
@@ -687,6 +713,7 @@ export class DeckController {
           }
         }
         this.ottySlots = applyOttyReadReceipts(this.ottySlots, this.ottyReadReceipts, false).slots;
+        this.ottySlots = applyOttyManualUnread(this.ottySlots, this.ottyManualUnread);
         this.lastError = "";
       } catch (error) {
         this.ottySlots = [];

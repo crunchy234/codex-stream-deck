@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { applyOttyReadReceipts, focusOttyTab, isOttyForeground, joinOttyAgentSlots, readOttyReadReceipts, writeOttyReadReceipts } from "../src/otty.js";
+import { applyOttyManualUnread, applyOttyReadReceipts, focusOttyTab, isOttyForeground, joinOttyAgentSlots, markOttyTabUnread, readOttyReadReceipts, writeOttyReadReceipts } from "../src/otty.js";
 
 const tabs = [
   { id: "tab-1", index: 0, title: "one", active: false },
@@ -36,6 +36,16 @@ test("marks only a newer, unread completion as complete", () => {
   const read = applyOttyReadReceipts([{ ...slots[0]!, selected: true }], { "pane-1": 100 }, true);
   assert.equal(read.slots[0]?.status, "idle");
   assert.equal(read.receipts["pane-1"], 101);
+});
+
+test("maps Otty's unread tab badge to a green Stream Deck state", () => {
+  const slots = joinOttyAgentSlots(
+    [{ id: "tab-1", index: 0, title: "one", active: false, badge: "unread" }],
+    [{ id: "pane-1", tab_id: "tab-1" }],
+    [{ version: 1, paneId: "pane-1", pid: 101, sessionId: "a", cwd: "/a", state: "idle", updatedAt: 1 }],
+    () => true
+  );
+  assert.equal(slots[0]?.status, "complete");
 });
 
 test("preserves a valid pi context percentage for the existing ring", () => {
@@ -90,4 +100,15 @@ test("focuses an Otty tab by its stable id", async () => {
   let received: string[] = [];
   await focusOttyTab("tab-2", { run: async (args) => { received = args; return ""; } });
   assert.deepEqual(received, ["tab", "focus", "tab-2"]);
+});
+
+test("marks an Otty tab unread by its stable id", async () => {
+  let received: string[] = [];
+  await markOttyTabUnread("tab-2", { run: async (args) => { received = args; return ""; } });
+  assert.deepEqual(received, ["tab", "badge", "--tab", "tab-2", "--kind", "unread"]);
+});
+
+test("keeps a Stream Deck unread mark when Otty does not report its badge", () => {
+  const slots = [{ tabId: "tab-1", paneId: "pane-1", title: "one", status: "idle" as const, selected: false }];
+  assert.equal(applyOttyManualUnread(slots, new Set(["tab-1"]))[0]?.status, "complete");
 });
