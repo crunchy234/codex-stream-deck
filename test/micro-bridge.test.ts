@@ -123,6 +123,7 @@ test("renderer selection prefers an exact host identity and rejects ambiguous UU
   const remote = `remote-ssh-codex-managed:mlgpu:${threadId}`;
   assert.equal(selectSidebarThreadId(remote, [local, remote]), remote);
   assert.equal(selectSidebarThreadId(threadId, [local]), local);
+  assert.equal(selectSidebarThreadId(threadId, [local, local]), local);
   assert.equal(selectSidebarThreadId(threadId, [local, remote]), undefined);
 });
 

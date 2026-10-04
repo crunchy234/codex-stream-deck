@@ -56,6 +56,12 @@ The same plugin runs on Windows and macOS. It discovers the local loopback port 
 6. resolve standalone keycap actions from Codex's live Micro keycap registry and current official command runner;
 7. read Codex's renderer-owned `rate-limit-status` query and normalize its current 5-hour, weekly, and reset-credit state.
 
+On newer Codex builds, the native Micro pinned atom can retain an older list.
+Pinned mode therefore reads the current sidebar rows in display order, including
+their live status, and selects their exact identities directly. The last observed
+sidebar list is retained while its rows are collapsed; older builds fall back to
+the native slots. Other source modes continue to use native Micro slots.
+
 The bridge does not emulate a USB HID device and installs no driver.
 
 Usage data remains part of the same typed host snapshot, but usage and reset credits are account-scoped and therefore do not follow the Mac/Windows function-key target. The controller prefers a healthy local account snapshot and falls back to the paired host only when local usage is unavailable. Window identity is derived from the duration returned by Codex rather than from primary/secondary ordering. A missing 5-hour window is represented as unavailable, and Automatic mode falls back to weekly. The bridge refreshes a stale renderer-owned usage query at most once every 15 seconds, so background-window values do not depend on Codex receiving focus.

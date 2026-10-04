@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import WebSocket from "ws";
+import { readPinnedSidebarSlots } from "./codex-sidebar.js";
 import { focusCodexWindow } from "./codex-open.js";
 import { codexDeckStateRoot } from "./codex-deck-paths.js";
 import { OFFICIAL_KEYCAP_IDS, type OfficialKeycapId } from "./keycaps.js";
@@ -55,7 +56,7 @@ export function selectSidebarThreadId(threadKey: string, sidebarThreadIds: reado
   const exact = sidebarThreadIds.find((candidate) => candidate === threadKey);
   if (exact) return exact;
   const canonical = canonicalThreadId(threadKey);
-  const matches = sidebarThreadIds.filter((candidate) => canonicalThreadId(candidate) === canonical);
+  const matches = [...new Set(sidebarThreadIds)].filter((candidate) => canonicalThreadId(candidate) === canonical);
   return matches.length === 1 ? matches[0] : undefined;
 }
 
@@ -224,11 +225,20 @@ const SNAPSHOT_EXPRESSION = `(async () => {
     }
     return undefined;
   };
-  const slots = found.slots.map((slot) => ({
+  const nativeSlots = found.slots.map((slot) => ({
     ...slot,
     activityAt: toEpoch(slot.activityAt) ?? toEpoch(slot.updatedAt) ?? toEpoch(slot.lastActivityAt) ??
       toEpoch(slot.thread?.updatedAt) ?? toEpoch(slot.task?.updatedAt)
   }));
+
+  const pinnedCacheKey = Symbol.for('codex-deck-live-pinned-slots');
+  const sidebarSlots = agentSource === 'pinned'
+    ? (${readPinnedSidebarSlots.toString()})(document, nativeSlots)
+    : undefined;
+  if (sidebarSlots) globalThis[pinnedCacheKey] = sidebarSlots;
+  const slots = agentSource === 'pinned'
+    ? sidebarSlots ?? globalThis[pinnedCacheKey] ?? nativeSlots
+    : nativeSlots;
 
   let usage;
   for (const client of queryClients) {
@@ -313,9 +323,9 @@ const SNAPSHOT_EXPRESSION = `(async () => {
     : 'light';
   const activeThreadElement = document.querySelector('[data-app-action-sidebar-thread-id][data-app-action-sidebar-thread-active="true"]')
     ?? document.querySelector('[data-app-action-sidebar-thread-id][aria-current="page"]');
-  const activeThreadKey = document.querySelector('[data-above-composer-conversation-id]')
-    ?.getAttribute('data-above-composer-conversation-id')
-    ?? activeThreadElement?.getAttribute('data-app-action-sidebar-thread-id')
+  const activeThreadKey = activeThreadElement?.getAttribute('data-app-action-sidebar-thread-id')
+    ?? [...document.querySelectorAll('[data-above-composer-conversation-id]')].find(element => element.getClientRects().length > 0)
+      ?.getAttribute('data-above-composer-conversation-id')
     ?? undefined;
   const activeThreadTitle = activeThreadElement
     ? (activeThreadElement.getAttribute('aria-label') ?? activeThreadElement.textContent ?? '').trim().slice(0, 240) || undefined
@@ -351,7 +361,10 @@ export class CodexMicroRendererBridge {
   async sendAgent(slot: number, act: 0 | 1, expectedThreadKey?: string): Promise<void> {
     if (!Number.isInteger(slot) || slot < 0 || slot > 5) throw new Error(`Ungültiger Micro-Agent-Slot: ${slot}`);
     const snapshot = act === 1 ? await this.refresh() : this.lastSnapshot ?? await this.refresh();
-    const plan = resolveAgentDispatch(snapshot, slot, expectedThreadKey);
+    const resolved = resolveAgentDispatch(snapshot, slot, expectedThreadKey);
+    // Pinned sidebar order can differ from the stale native HID slot order.
+    const plan: AgentDispatchPlan = snapshot.agentSource === "pinned"
+      ? { kind: "direct", threadKey: resolved.threadKey } : resolved;
     if (act === 1) {
       try { await focusCodexWindow(); }
       catch (error) { this.log(`Codex window focus was unavailable: ${String(error)}`); }
@@ -411,7 +424,7 @@ export class CodexMicroRendererBridge {
       if (await waitForActive(250)) return 'active';
       const items = [...document.querySelectorAll('[data-app-action-sidebar-thread-id]')];
       const selectedId = (() => {
-        const ids = items.map((element) => element.getAttribute('data-app-action-sidebar-thread-id')).filter(Boolean);
+        const ids = [...new Set(items.map((element) => element.getAttribute('data-app-action-sidebar-thread-id')).filter(Boolean))];
         const exact = ids.find((id) => id === threadKey);
         if (exact) return exact;
         const matches = ids.filter((id) => canonicalThreadId(id) === canonicalThreadId(threadKey));
