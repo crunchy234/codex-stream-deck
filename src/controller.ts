@@ -10,6 +10,7 @@ import { CodexRelayClient, readRelayClientConfig } from "./codex-relay-client.js
 import { CodexRelayServer, readRelayServerConfig } from "./codex-relay-server.js";
 import { CodexMicroRendererBridge } from "./codex-micro-renderer-bridge.js";
 import { applyOttyManualUnread, applyOttyReadReceipts, focusOttyTab, isOttyForeground, markOttyTabUnread, readOttyAgentSlots, readOttyReadReceipts, writeOttyReadReceipts, type OttyAgentSlot } from "./otty.js";
+import { T3ThreadMonitor } from "./t3.js";
 import { getOrCreateHostIdentity } from "./host-identity.js";
 import type { OfficialKeycapId } from "./keycaps.js";
 import {
@@ -287,6 +288,7 @@ const LONG_PRESS_THRESHOLD_MS = 450;
 const LONG_PRESS_LEASE_MS = 60_000;
 
 export class DeckController {
+  private readonly t3Monitor = new T3ThreadMonitor();
   private readonly microBridge = new CodexMicroRendererBridge((message) => streamDeck.logger.info(message));
   private readonly agents = new Map<string, AgentRegistration>();
   private readonly microActions = new Map<string, MicroActionRegistration>();
@@ -345,7 +347,7 @@ export class DeckController {
       const settings = await streamDeck.settings.getGlobalSettings<ContextRingSettings & { longPress?: LongPressSettings }>();
       this.showContextRings = settings.showContextRings !== false;
       this.longPressSettings = normalizeLongPressSettings(settings.longPress);
-      this.agentMode = settings.agentMode === "otty" ? "otty" : "codex";
+      this.agentMode = settings.agentMode === "t3" ? "t3" : settings.agentMode === "otty" ? "otty" : "codex";
     } catch (error) {
       streamDeck.logger.warn(`Context-ring settings were unavailable; using enabled by default: ${String(error)}`);
     }
@@ -473,9 +475,11 @@ export class DeckController {
   }
 
   setAgentMode(mode: AgentMode | undefined): void {
-    const next: AgentMode = mode === "otty" ? "otty" : "codex";
+    const next: AgentMode = mode === "t3" ? "t3" : mode === "otty" ? "otty" : "codex";
     if (next === this.agentMode) return;
     this.agentPresses.updateSettings();
+    for (const press of this.ottyPresses.values()) clearTimeout(press.timer);
+    this.ottyPresses.clear();
     this.agentMode = next;
     void this.refresh();
   }
@@ -511,6 +515,12 @@ export class DeckController {
   }
 
   async beginAgentPress(actionId: string, slot: number): Promise<void> {
+    if (this.agentMode === "t3") {
+      if (!this.t3Monitor.slots[slot]) return;
+      await this.t3Monitor.focus(slot);
+      await this.renderAll();
+      return;
+    }
     if (this.agentMode === "otty") {
       const tab = this.ottySlots[slot];
       if (!tab) return;
@@ -535,6 +545,7 @@ export class DeckController {
   }
 
   async endAgentPress(actionId: string): Promise<void> {
+    if (this.agentMode === "t3") return;
     if (this.agentMode === "otty") {
       const press = this.ottyPresses.get(actionId);
       if (press) clearTimeout(press.timer);
@@ -700,6 +711,18 @@ export class DeckController {
   }
 
   private async refreshOnce(): Promise<void> {
+    if (this.agentMode === "t3") {
+      try {
+        await this.t3Monitor.refresh();
+        this.lastError = "";
+      } catch (error) {
+        const message = String(error);
+        if (message !== this.lastError) streamDeck.logger.warn(`T3 thread monitoring unavailable: ${message}`);
+        this.lastError = message;
+      }
+      await this.renderAll();
+      return;
+    }
     if (this.agentMode === "otty") {
       try {
         this.ottySlots = await readOttyAgentSlots();
@@ -803,6 +826,14 @@ export class DeckController {
   }
 
   private async renderAgent({ action, slot }: AgentRegistration): Promise<void> {
+    if (this.agentMode === "t3") {
+      const thread = this.t3Monitor.slots[slot];
+      await this.setImage(action, renderAgentKey(
+        slot, thread?.title ?? (this.t3Monitor.healthy ? "Not assigned" : "T3 unavailable"),
+        thread?.status ?? "empty", false, this.animationFrame, "dark", undefined,
+        this.t3Monitor.healthy ? "ready" : "offline", undefined, false));
+      return;
+    }
     if (this.agentMode === "otty") {
       const tab = this.ottySlots[slot];
       await this.setImage(action, renderAgentKey(
@@ -826,7 +857,8 @@ export class DeckController {
 
   private async renderAnimatedAgents(): Promise<void> {
     const registrations = [...this.agents.values()].filter(({ slot }) => {
-      const agent = this.agentMode === "otty" ? this.ottySlots[slot] : this.routedSlots[slot];
+      const agent = this.agentMode === "t3" ? (this.t3Monitor.healthy ? this.t3Monitor.slots[slot] : undefined)
+        : this.agentMode === "otty" ? this.ottySlots[slot] : this.routedSlots[slot];
       if (!agent) return false;
       const status = visualStatusFromMicro(agent.status);
       return status === "thinking" || status === "input";

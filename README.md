@@ -41,6 +41,10 @@ Windows-only and Mac-only mode have no relay, no second computer dependency, and
 
 To map **Agent 1–6** to Otty tabs 1–6, copy the packaged `extensions/otty-pi-agent-state.ts` to `~/.pi/agent/extensions/`, run `/reload` (or restart pi), then set **Agent source** to **Otty pi tabs** in an Agent key’s property inspector. Pi sessions outside Otty and tabs without pi render as empty. This integration uses Otty's supported CLI; it does not modify Otty.app.
 
+### T3 Code thread monitoring and switching
+
+Choose **T3 Code threads** as an Agent key's **Agent source** to show up to six T3 threads with live status. Press a key to open its thread. Keys follow T3's pinned order; without pins, active threads keep stable positions. Configure read-only local access with `npm run setup:t3`. See [T3 setup and behavior](docs/T3.md). T3 thread keys require T3 Code desktop instead of the Codex launcher; other action keys remain Codex controls.
+
 ## Requirements
 
 - Codex desktop on the computer being controlled.

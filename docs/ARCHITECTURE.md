@@ -175,3 +175,9 @@ paired machines and nowhere else.
 ## Compatibility boundary
 
 This is not a public Codex extension API. Export names, internal commands, or event shapes can change. The code avoids fixed bundle hashes where possible, but semantic changes still require a release update.
+
+## T3 thread source
+
+`src/t3.ts` reads T3's local runtime port, confirms the public environment descriptor and orchestration protocol 2, then polls `/api/orchestration/shell` with a dedicated `orchestration:read` bearer session and `x-t3-orchestration-protocol: 2`. Monitoring retains thread titles and structural shell fields, discarding message previews. Endpoint validation restricts credentials to loopback HTTP and disables redirects. `scripts/setup-t3.ts` issues the scoped session through T3's CLI and stores it outside the repository.
+
+The six agent tiles use native `t3code://threads/<environment>/<thread>` links, with encoded identifiers, to activate the desktop app and select a thread. No renderer debugging, hotkeys, T3 database reads, or T3 patches are involved. Pin order supplies assignments; with no pins, active thread identities stay stable while work changes. The shell API does not supply the foreground thread identity, so T3 tiles do not infer a selected outline. Other Codex controls and the relay/iPhone protocol are not routed to T3. See [T3 setup](T3.md).

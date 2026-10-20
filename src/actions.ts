@@ -15,8 +15,12 @@ abstract class AgentAction extends SingletonAction {
     this.controller.unregisterAgent(ev.action);
   }
 
-  override onKeyDown(ev: KeyDownEvent): Promise<void> {
-    return this.controller.beginAgentPress(ev.action.id, this.slot);
+  override async onKeyDown(ev: KeyDownEvent): Promise<void> {
+    try { await this.controller.beginAgentPress(ev.action.id, this.slot); }
+    catch (error) {
+      streamDeck.logger.error(`Agent ${this.slot + 1} could not be opened: ${String(error)}`);
+      await ev.action.showAlert();
+    }
   }
 
   override onKeyUp(ev: KeyUpEvent): Promise<void> {

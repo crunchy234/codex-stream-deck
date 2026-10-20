@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0.17 - 2026-10-20
+
+- Exclude subagents carrying inherited pin metadata from automatic T3 pinned assignments so all sidebar pins retain their positions. Explicit thread assignments remain available.
+- Add a regression for pinned subagents crowding the last sidebar threads out of the six tiles.
+
+## 0.7.0.16 - 2026-10-20
+
+- Fix T3 monitoring going offline when an imported thread ID contains an encoded path or exceeds 200 characters. Treat T3 IDs as opaque strings and safely encode them in native thread links.
+- Add a regression covering archiving a displayed thread while imported threads remain available, plus URI and native-launch safety checks.
+
 ## 0.7.0.2 - 2026-07-22
 
 - Normalize remote snapshot timestamps to local receipt time so ordinary Mac/Windows clock differences cannot hide working, selected, approval, or usage state.

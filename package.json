@@ -1,6 +1,6 @@
 {
   "name": "codex-stream-deck",
-  "version": "0.7.0-hotfix.11",
+  "version": "0.7.0-hotfix.17",
   "private": false,
   "type": "module",
   "description": "Unofficial Codex Micro bridge for Stream Deck on Windows and macOS, with optional multi-host relay",
@@ -15,6 +15,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs && node scripts/build-launcher.mjs",
+    "setup:t3": "tsx scripts/setup-t3.ts",
     "docs:preview": "tsx scripts/generate-doc-preview.ts",
     "qa:local-icons": "tsx scripts/generate-local-icon-qa.ts",
     "smoke:relay": "tsx scripts/relay-smoke.ts",

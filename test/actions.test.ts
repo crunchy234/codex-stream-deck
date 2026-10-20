@@ -17,3 +17,10 @@ test("agent disappearance delegates press cleanup to the controller once", async
 
   assert.equal(cleanupCalls, 1);
 });
+
+test("a failed thread switch shows a key alert instead of leaking an unhandled rejection", async () => {
+  let alerts = 0;
+  const action = new Agent1({ beginAgentPress: async () => { throw new Error("Thread offline"); } } as never);
+  await action.onKeyDown({ action: { id: "agent-a", showAlert: async () => { alerts++; } } } as never);
+  assert.equal(alerts, 1);
+});

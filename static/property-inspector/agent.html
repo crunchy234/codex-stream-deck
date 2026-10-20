@@ -24,14 +24,16 @@
     <select id="agent-mode">
       <option value="codex">Codex Micro</option>
       <option value="otty">Otty pi tabs</option>
+      <option value="t3">T3 Code threads</option>
     </select>
   </label>
+  <p>T3 mode shows six pinned threads in sidebar order (or stable active threads when no threads are pinned). Press a key to open its thread. Run the T3 setup command once before selecting this source.</p>
   <p>Otty mode maps Agent 1–6 to Otty tabs 1–6. Other keys remain Codex controls.</p>
   <label>
     <span>Context ring</span>
     <input id="show-context-rings" type="checkbox" checked>
   </label>
-  <p>This global option applies to all six Codex agent keys on this computer.</p>
+  <p>Agent source applies to all six keys. Context rings require source support. T3 keys only switch threads; hold actions below apply to Codex.</p>
   <label>
     <span>Hold action</span>
     <select id="long-press-mode">
