@@ -199,6 +199,8 @@ export class T3ThreadMonitor {
   private config?: T3Config;
   private threads: Array<T3Thread | undefined> = [];
   private readonly readAt = new Map<string, number>();
+  /** Stream Deck unread marks, keyed like readAt, with the time they were made. */
+  private readonly markedUnreadAt = new Map<string, number>();
   constructor(private readonly options: {
     configPath?: string;
     request?: typeof fetch;
@@ -240,13 +242,29 @@ export class T3ThreadMonitor {
     }
     // Only acknowledge the completion that was displayed, never work completing during navigation.
     this.readAt.set(`${config.environmentId}/${thread.id}`, timestamp(thread.latestRunCompletedAt));
+    this.markedUnreadAt.delete(`${config.environmentId}/${thread.id}`);
+    this.updateSlots();
+  }
+
+  /** Shows an idle thread as unread on the deck until it is opened from the deck or in T3. */
+  markUnread(threadId: string, now = Date.now()): void {
+    if (!this.config || !this.threads.some((t) => t?.id === threadId)) return;
+    this.markedUnreadAt.set(`${this.config.environmentId}/${threadId}`, now);
     this.updateSlots();
   }
 
   private updateSlots(): void {
-    this.slots = this.threads.map((t) => t ? {
-      threadId: t.id, title: t.title || "New thread",
-      status: t3VisualStatus(t, this.readAt.get(`${this.config?.environmentId}/${t.id}`))
-    } : undefined);
+    this.slots = this.threads.map((t) => {
+      if (!t) return undefined;
+      const key = `${this.config?.environmentId}/${t.id}`;
+      const status = t3VisualStatus(t, this.readAt.get(key));
+      const marked = this.markedUnreadAt.get(key);
+      // Visiting the thread in T3 after the mark acknowledges it as read.
+      if (marked !== undefined && timestamp(t.lastVisitedAt) > marked) this.markedUnreadAt.delete(key);
+      return {
+        threadId: t.id, title: t.title || "New thread",
+        status: status === "idle" && this.markedUnreadAt.has(key) ? "complete" : status
+      };
+    });
   }
 }

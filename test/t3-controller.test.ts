@@ -28,3 +28,28 @@ test("T3 agent keys monitor and switch threads without entering the Codex contro
   assert.deepEqual(switches, [0]);
   assert(images > 0);
 });
+
+test("holding a T3 agent key opens the thread, then marks it unread; a tap does not", async () => {
+  const controller = new DeckController();
+  const marked: string[] = [];
+  const monitor = {
+    healthy: true,
+    slots: [{ threadId: "a", title: "Live T3 thread", status: "idle" }],
+    refresh: async () => {},
+    focus: async () => {},
+    markUnread: (threadId: string) => { marked.push(threadId); }
+  };
+  Object.defineProperty(controller, "t3Monitor", { value: monitor });
+  controller.setAgentMode("t3");
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.registerAgent(0, { id: "agent-a", setImage: async () => {} } as never);
+  await controller.beginAgentPress("agent-a", 0);
+  await controller.endAgentPress("agent-a");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.deepEqual(marked, []);
+  await controller.beginAgentPress("agent-a", 0);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await controller.endAgentPress("agent-a");
+  assert.deepEqual(marked, ["a"]);
+  await controller.stop();
+});

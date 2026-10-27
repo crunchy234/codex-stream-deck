@@ -175,3 +175,34 @@ test("HTTP monitor authenticates read-only requests, opens the captured identity
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("a Stream Deck unread mark lasts until the thread is opened from the deck or visited in T3", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "t3-unread-"));
+  const runtimePath = join(directory, "runtime.json");
+  const configPath = join(directory, "t3.json");
+  let state = [thread("a", { status: "completed", latestRunCompletedAt: at(2), lastVisitedAt: at(3) }), thread("b", { status: "running" })];
+  const request = (async (url: string) => Response.json(url.endsWith("/.well-known/t3/environment")
+    ? { environmentId: "env", orchestrationProtocolVersion: 2 } : { threads: state })) as typeof fetch;
+  await writeFile(runtimePath, JSON.stringify({ port: 4000 }));
+  await writeFile(configPath, JSON.stringify({ token: "fixture-token", environmentId: "env", runtimePath }));
+  const monitor = new T3ThreadMonitor({ configPath, request, open: async () => {} });
+  try {
+    await monitor.refresh();
+    assert.equal(monitor.slots[0]?.status, "idle");
+    monitor.markUnread("a", 4_000);
+    monitor.markUnread("b", 4_000);
+    monitor.markUnread("missing", 4_000);
+    assert.equal(monitor.slots[0]?.status, "complete");
+    assert.equal(monitor.slots[1]?.status, "thinking", "live activity outranks an unread mark");
+    await monitor.refresh();
+    assert.equal(monitor.slots[0]?.status, "complete", "the mark survives polling");
+    await monitor.focus(0);
+    assert.equal(monitor.slots[0]?.status, "idle");
+    monitor.markUnread("a", 4_000);
+    state = [thread("a", { status: "completed", latestRunCompletedAt: at(2), lastVisitedAt: at(5) })];
+    await monitor.refresh();
+    assert.equal(monitor.slots[0]?.status, "idle", "visiting in T3 after the mark clears it");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -311,7 +311,7 @@ export class DeckController {
   });
   private readonly activityIndex = new HostActivityIndex();
   private readonly pressedAgents = new Map<number, RoutedAgentSlot>();
-  private readonly ottyPresses = new Map<string, { tabId: string; timer: NodeJS.Timeout }>();
+  private readonly markUnreadPresses = new Map<string, NodeJS.Timeout>();
   private readonly pressedControlTargets = new Map<string, string>();
   private relayClient?: CodexRelayClient;
   private mobileRelayServer?: CodexRelayServer;
@@ -442,8 +442,8 @@ export class DeckController {
     } catch (error) {
       streamDeck.logger.error(`Agent long-press cleanup failed: ${String(error)}`);
     }
-    for (const press of this.ottyPresses?.values() ?? []) clearTimeout(press.timer);
-    this.ottyPresses?.clear();
+    for (const timer of this.markUnreadPresses?.values() ?? []) clearTimeout(timer);
+    this.markUnreadPresses?.clear();
     this.ottyManualUnread?.clear();
     if (this.macosShortcutHandle) {
       try {
@@ -478,8 +478,8 @@ export class DeckController {
     const next: AgentMode = mode === "t3" ? "t3" : mode === "otty" ? "otty" : "codex";
     if (next === this.agentMode) return;
     this.agentPresses.updateSettings();
-    for (const press of this.ottyPresses.values()) clearTimeout(press.timer);
-    this.ottyPresses.clear();
+    for (const timer of this.markUnreadPresses.values()) clearTimeout(timer);
+    this.markUnreadPresses.clear();
     this.agentMode = next;
     void this.refresh();
   }
@@ -516,8 +516,17 @@ export class DeckController {
 
   async beginAgentPress(actionId: string, slot: number): Promise<void> {
     if (this.agentMode === "t3") {
-      if (!this.t3Monitor.slots[slot]) return;
-      await this.t3Monitor.focus(slot);
+      const thread = this.t3Monitor.slots[slot];
+      if (!thread) return;
+      // Arm before opening so a release during navigation cancels the hold.
+      const focused = this.t3Monitor.focus(slot);
+      this.startMarkUnreadPress(actionId, async () => {
+        await focused;
+        this.t3Monitor.markUnread(thread.threadId);
+        await this.renderAll();
+      });
+      try { await focused; }
+      catch (error) { this.clearMarkUnreadPress(actionId); throw error; }
       await this.renderAll();
       return;
     }
@@ -527,16 +536,11 @@ export class DeckController {
       await focusOttyTab(tab.tabId);
       this.ottyManualUnread.delete(tab.tabId);
       void this.refresh();
-      const timer = setTimeout(() => {
-        const press = this.ottyPresses.get(actionId);
-        if (!press) return;
-        this.ottyPresses.delete(actionId);
-        void markOttyTabUnread(press.tabId).then(() => {
-          this.ottyManualUnread.add(press.tabId);
-          void this.refresh();
-        }).catch((error) => streamDeck.logger.error(`Otty unread mark failed: ${String(error)}`));
-      }, LONG_PRESS_THRESHOLD_MS);
-      this.ottyPresses.set(actionId, { tabId: tab.tabId, timer });
+      this.startMarkUnreadPress(actionId, async () => {
+        await markOttyTabUnread(tab.tabId);
+        this.ottyManualUnread.add(tab.tabId);
+        void this.refresh();
+      });
       return;
     }
     const assignment = this.routedSlots[slot];
@@ -544,12 +548,25 @@ export class DeckController {
     await this.agentPresses.down(actionId, assignment);
   }
 
+  /** A hold past the long-press threshold marks the just-opened agent unread again. */
+  private startMarkUnreadPress(actionId: string, markUnread: () => Promise<void>): void {
+    this.clearMarkUnreadPress(actionId);
+    const timer = setTimeout(() => {
+      if (this.markUnreadPresses.get(actionId) !== timer) return;
+      this.markUnreadPresses.delete(actionId);
+      void markUnread().catch((error) => streamDeck.logger.error(`Unread mark failed: ${String(error)}`));
+    }, LONG_PRESS_THRESHOLD_MS);
+    this.markUnreadPresses.set(actionId, timer);
+  }
+
+  private clearMarkUnreadPress(actionId: string): void {
+    clearTimeout(this.markUnreadPresses.get(actionId));
+    this.markUnreadPresses.delete(actionId);
+  }
+
   async endAgentPress(actionId: string): Promise<void> {
-    if (this.agentMode === "t3") return;
-    if (this.agentMode === "otty") {
-      const press = this.ottyPresses.get(actionId);
-      if (press) clearTimeout(press.timer);
-      this.ottyPresses.delete(actionId);
+    if (this.agentMode === "t3" || this.agentMode === "otty") {
+      this.clearMarkUnreadPress(actionId);
       return;
     }
     await this.agentPresses.up(actionId);
@@ -557,9 +574,7 @@ export class DeckController {
   }
 
   async cancelAgentPress(actionId: string): Promise<void> {
-    const press = this.ottyPresses.get(actionId);
-    if (press) clearTimeout(press.timer);
-    this.ottyPresses.delete(actionId);
+    this.clearMarkUnreadPress(actionId);
     await this.agentPresses.cancel(actionId);
   }
 

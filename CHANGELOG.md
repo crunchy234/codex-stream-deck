@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Hold a T3 Code agent key to mark its thread unread on the Stream Deck, matching Otty tabs. The mark clears on the next press or when the thread is visited in T3.
+
 ## 0.7.0.17 - 2026-10-20
 
 - Exclude subagents carrying inherited pin metadata from automatic T3 pinned assignments so all sidebar pins retain their positions. Explicit thread assignments remain available.
