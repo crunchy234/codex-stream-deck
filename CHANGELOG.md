@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0.18 - 2026-10-28
 
 - Hold a T3 Code agent key to mark its thread unread on the Stream Deck, matching Otty tabs. The mark clears on the next press or when the thread is visited in T3.
 
