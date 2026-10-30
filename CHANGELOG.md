@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0.19 - 2026-10-30
+
+- Skip snoozed T3 threads in automatic key assignments, matching T3's sidebar. Later pins move up to fill the gap, and the thread returns when its snooze ends, or earlier if it needs input or fails. Fixed `threadIds` assignments still show snoozed threads.
+
 ## 0.7.0.18 - 2026-10-28
 
 - Hold a T3 Code agent key to mark its thread unread on the Stream Deck, matching Otty tabs. The mark clears on the next press or when the thread is visited in T3.
