@@ -19,6 +19,26 @@ test("pins follow sidebar order, retain settled pins, and exclude deleted/archiv
   assert.deepEqual(slots.map((t) => t?.id), ["a", "b", undefined, undefined, undefined, undefined]);
 });
 
+test("snoozed threads leave automatic keys until they wake, so later pins move up", () => {
+  const now = 50_000;
+  const threads = [
+    thread("first", { pinnedAt: at(1), pinOrderKey: "a" }),
+    thread("snoozed", { pinnedAt: at(1), pinOrderKey: "b", snoozedAt: at(10), snoozedUntil: at(60) }),
+    thread("woke", { pinnedAt: at(1), pinOrderKey: "c", snoozedAt: at(10), snoozedUntil: at(40) }),
+    thread("asks", { pinnedAt: at(1), pinOrderKey: "d", snoozedAt: at(10), snoozedUntil: at(60), pendingRuntimeRequest: { kind: "approval" } }),
+    thread("failed", { pinnedAt: at(1), pinOrderKey: "e", status: "failed", latestRunCompletedAt: at(20), snoozedAt: at(10), snoozedUntil: at(60) }),
+    thread("failed-before", { pinnedAt: at(1), pinOrderKey: "f", status: "failed", latestRunCompletedAt: at(5), snoozedAt: at(10), snoozedUntil: at(60) }),
+    thread("last", { pinnedAt: at(1), pinOrderKey: "g" })
+  ];
+  assert.deepEqual(selectT3Threads(threads, [], undefined, now).map((t) => t?.id),
+    ["first", "woke", "asks", "failed", "last", undefined]);
+  assert.equal(selectT3Threads(threads, [], undefined, 61_000)[1]?.id, "snoozed");
+  // Unpinned fallback hides snoozed threads too; explicit assignments still show them.
+  const active = [thread("a"), thread("z", { snoozedUntil: at(60) })];
+  assert.deepEqual(selectT3Threads(active, [], undefined, now).map((t) => t?.id).filter(Boolean), ["a"]);
+  assert.equal(selectT3Threads(active, [], ["z"], now)[0]?.id, "z");
+});
+
 test("inherited subagent pins cannot crowd out the sidebar's pinned threads", () => {
   const parent = thread("parent", { pinnedAt: at(2), pinOrderKey: "h" });
   const children = Array.from({ length: 4 }, (_, i) => thread(`child-${i}`, {

@@ -33,6 +33,8 @@ export type T3Thread = {
   deletedAt?: string | null;
   settledAt?: string | null;
   pinnedAt?: string | null;
+  snoozedAt?: string | null;
+  snoozedUntil?: string | null;
   pinOrderKey?: string | null;
   activeOrderKey?: string | null;
   lineage?: { relationshipToParent?: string };
@@ -118,7 +120,7 @@ export function parseT3Threads(value: unknown): T3Thread[] {
       updatedAt: t.updatedAt, latestRunCompletedAt: t.latestRunCompletedAt, lastVisitedAt: t.lastVisitedAt,
       pendingRuntimeRequest: t.pendingRuntimeRequest, hasActionableProposedPlan: t.hasActionableProposedPlan,
       archivedAt: t.archivedAt, deletedAt: t.deletedAt, settledAt: t.settledAt,
-      pinnedAt: t.pinnedAt, pinOrderKey: t.pinOrderKey, activeOrderKey: t.activeOrderKey, lineage: t.lineage
+      pinnedAt: t.pinnedAt, snoozedAt: t.snoozedAt, snoozedUntil: t.snoozedUntil, pinOrderKey: t.pinOrderKey, activeOrderKey: t.activeOrderKey, lineage: t.lineage
     };
   });
 }
@@ -141,14 +143,23 @@ export function t3VisualStatus(thread: T3Thread, readAt = 0): AgentVisualStatus 
   return "idle";
 }
 
+/** Mirrors T3's sidebar: a snoozed thread is shelved until its wake time, or until it needs input or fails. */
+export function t3Snoozed(thread: T3Thread, now = Date.now()): boolean {
+  if (timestamp(thread.snoozedUntil) <= now || thread.pendingRuntimeRequest) return false;
+  return !(thread.status === "failed" && (!thread.snoozedAt
+    || timestamp(thread.latestRunCompletedAt ?? thread.updatedAt) > timestamp(thread.snoozedAt)));
+}
+
 /** Pinned keys follow explicit sidebar ordering; unpinned keys retain their identities as activity changes. */
-export function selectT3Threads(threads: T3Thread[], previous: Array<string | undefined> = [], fixed?: Array<string | null>): Array<T3Thread | undefined> {
+export function selectT3Threads(threads: T3Thread[], previous: Array<string | undefined> = [], fixed?: Array<string | null>, now = Date.now()): Array<T3Thread | undefined> {
   const live = threads.filter((t) => !t.archivedAt && !t.deletedAt);
   const byId = new Map(live.map((t) => [t.id, t]));
   if (fixed) return Array.from({ length: 6 }, (_, i) => byId.get(fixed[i] ?? ""));
+  // Snoozed threads leave T3's pinned and active sections, so later keys move up.
+  const visible = live.filter((t) => !t3Snoozed(t, now));
   // Subagents can inherit their parent's pin metadata, but are hidden from
   // T3's pinned sidebar. They must not consume the six automatic slots.
-  const pinned = live.filter((t) => t.pinnedAt && t.lineage?.relationshipToParent !== "subagent");
+  const pinned = visible.filter((t) => t.pinnedAt && t.lineage?.relationshipToParent !== "subagent");
   if (pinned.length) {
     pinned.sort((a, b) => {
       if (a.pinOrderKey && b.pinOrderKey && a.pinOrderKey !== b.pinOrderKey) return a.pinOrderKey < b.pinOrderKey ? -1 : 1;
@@ -156,7 +167,7 @@ export function selectT3Threads(threads: T3Thread[], previous: Array<string | un
     });
     return Array.from({ length: 6 }, (_, i) => pinned[i]);
   }
-  const candidates = live.filter((t) => !t.settledAt && t.lineage?.relationshipToParent !== "subagent");
+  const candidates = visible.filter((t) => !t.settledAt && t.lineage?.relationshipToParent !== "subagent");
   const eligible = new Set(candidates.map((t) => t.id));
   const result = Array.from({ length: 6 }, (_, i) => eligible.has(previous[i] ?? "") ? byId.get(previous[i]!) : undefined);
   const assigned = new Set(result.flatMap((t) => t ? [t.id] : []));
