@@ -3,8 +3,12 @@ import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CodexSessionOwnershipIndex, sessionIdFromRolloutFilename, sessionIdFromThreadKey } from "../src/session-ownership.js";
+import { CodexSessionOwnershipIndex, SESSION_SCAN_INTERVAL_MS, sessionIdFromRolloutFilename, sessionIdFromThreadKey } from "../src/session-ownership.js";
 import type { MicroSnapshot } from "../src/types.js";
+
+test("session scans are throttled to avoid competing with key rendering", () => {
+  assert.equal(SESSION_SCAN_INTERVAL_MS, 30_000);
+});
 
 const owned = "019f7336-04a2-72f1-af41-2f216ccdc3d0";
 const mirrored = "019f6de7-44c2-7fe2-9d17-9322c952e626";

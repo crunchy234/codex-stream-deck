@@ -286,6 +286,7 @@ const LOCAL_MOBILE_CONFIG = "mobile-local-relay-server.json";
 const RESET_HOLD_MS = 1_200;
 const LONG_PRESS_THRESHOLD_MS = 450;
 const LONG_PRESS_LEASE_MS = 60_000;
+const ANIMATION_INTERVAL_MS = 1_000;
 
 export class DeckController {
   private readonly t3Monitor = new T3ThreadMonitor();
@@ -603,7 +604,6 @@ export class DeckController {
 
   unregisterHostToggle(action: ActionIdentity): void {
     this.hostToggleActions.delete(action.id);
-    this.lastImages.delete(action.id);
   }
 
   registerUsageLimit(action: KeyAction, mode: UsageLimitMode): void {
@@ -1022,7 +1022,7 @@ export class DeckController {
 
   private async setImage(action: KeyAction, image: string): Promise<void> {
     if (this.lastImages.get(action.id) === image) return;
-    await Promise.all([action.setImage(image), action.setTitle("")]);
+    await action.setImage(image);
     this.lastImages.set(action.id, image);
   }
 
@@ -1034,7 +1034,6 @@ export class DeckController {
 
   private unregister<T>(action: ActionIdentity, registrations: Map<string, T>): void {
     registrations.delete(action.id);
-    this.lastImages.delete(action.id);
   }
 
   private scheduleRefresh(): void {
@@ -1051,7 +1050,7 @@ export class DeckController {
       this.animationFrame = (this.animationFrame + 1) % 12;
       try { await Promise.all([this.renderAnimatedAgents(), this.renderResetHolds()]); }
       finally { this.scheduleAnimation(); }
-    }, 200);
+    }, ANIMATION_INTERVAL_MS);
   }
 
   private keycapImage(keycapId: string, theme: "light" | "dark"): Promise<string | null> {

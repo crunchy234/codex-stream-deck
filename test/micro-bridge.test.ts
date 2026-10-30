@@ -181,7 +181,11 @@ test("controller avoids overlapping polls and redundant image writes", async () 
   ]);
   assert.match(source, /lastImages/);
   assert.match(source, /this\.lastImages\.get\(action\.id\) === image/);
+  assert.doesNotMatch(source, /action\.setTitle\(""\)/);
+  assert.doesNotMatch(source, /this\.lastImages\.delete\(action\.id\)/);
   assert.match(source, /scheduleRefresh/);
+  assert.match(source, /const ANIMATION_INTERVAL_MS = 1_000/);
+  assert.match(source, /}, ANIMATION_INTERVAL_MS\);/);
   assert.match(source, /status === "thinking" \|\| status === "input"/);
   assert.match(source, /pressedAgents/);
   assert.match(source, /pressedControlTargets/);

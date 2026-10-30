@@ -6,6 +6,7 @@ import type { HostSessionPresence, MicroSnapshot } from "./types.js";
 const SESSION_FILENAME = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 const THREAD_KEY = /(?:^|:)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 const COMPLETION_FRESHNESS_MS = 5 * 60_000;
+export const SESSION_SCAN_INTERVAL_MS = 30_000;
 
 export class CodexSessionOwnershipIndex {
   private sessionIds = new Set<string>();
@@ -17,7 +18,7 @@ export class CodexSessionOwnershipIndex {
 
   constructor(
     private readonly roots = defaultSessionRoots(),
-    private readonly refreshIntervalMs = 5_000
+    private readonly refreshIntervalMs = SESSION_SCAN_INTERVAL_MS
   ) {}
 
   async annotate(snapshot: MicroSnapshot, now = Date.now()): Promise<MicroSnapshot> {
