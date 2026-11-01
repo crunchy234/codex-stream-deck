@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0.20 - 2026-11-02
+
+- Keep a T3 Code thread in the working state while it waits on subagents or background tasks between runs, matching T3's "Waiting" sidebar status. It no longer shows as an unread completion.
+
 ## 0.7.0.19 - 2026-10-30
 
 - Skip snoozed T3 threads in automatic key assignments, matching T3's sidebar. Later pins move up to fill the gap, and the thread returns when its snooze ends, or earlier if it needs input or fails. Fixed `threadIds` assignments still show snoozed threads.
