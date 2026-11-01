@@ -38,6 +38,8 @@ export type T3Thread = {
   pinOrderKey?: string | null;
   activeOrderKey?: string | null;
   lineage?: { relationshipToParent?: string };
+  /** Content-free summary of T3's pending background work (descriptions are dropped). */
+  pendingBackgroundTasks?: Array<{ kind?: string; awaited?: boolean }>;
 };
 export type T3AgentSlot = {
   threadId: string;
@@ -120,7 +122,11 @@ export function parseT3Threads(value: unknown): T3Thread[] {
       updatedAt: t.updatedAt, latestRunCompletedAt: t.latestRunCompletedAt, lastVisitedAt: t.lastVisitedAt,
       pendingRuntimeRequest: t.pendingRuntimeRequest, hasActionableProposedPlan: t.hasActionableProposedPlan,
       archivedAt: t.archivedAt, deletedAt: t.deletedAt, settledAt: t.settledAt,
-      pinnedAt: t.pinnedAt, snoozedAt: t.snoozedAt, snoozedUntil: t.snoozedUntil, pinOrderKey: t.pinOrderKey, activeOrderKey: t.activeOrderKey, lineage: t.lineage
+      pinnedAt: t.pinnedAt, snoozedAt: t.snoozedAt, snoozedUntil: t.snoozedUntil, pinOrderKey: t.pinOrderKey, activeOrderKey: t.activeOrderKey, lineage: t.lineage,
+      pendingBackgroundTasks: Array.isArray(t.pendingBackgroundTasks)
+        ? t.pendingBackgroundTasks.flatMap((task) => task && typeof task === "object"
+          ? [{ kind: typeof task.kind === "string" ? task.kind : undefined, awaited: task.awaited === true }] : [])
+        : undefined
     };
   });
 }
@@ -135,8 +141,15 @@ function timestamp(value: string | null | undefined): number {
   return typeof value === "string" ? Date.parse(value) || 0 : 0;
 }
 
+/** Mirrors T3: an awaited task, subagent, or background task keeps a parent "Waiting" between its runs. */
+export function t3AwaitingBackgroundWork(thread: T3Thread): boolean {
+  return thread.status !== "failed" && (thread.pendingBackgroundTasks ?? []).some((task) =>
+    task.awaited === true || task.kind === "subagent" || task.kind === "background_task");
+}
+
 export function t3VisualStatus(thread: T3Thread, readAt = 0): AgentVisualStatus {
   if (thread.pendingRuntimeRequest || thread.hasActionableProposedPlan) return "input";
+  if (t3AwaitingBackgroundWork(thread)) return "thinking";
   if (["preparing", "queued", "starting", "running", "waiting"].includes(thread.activityRunStatus ?? thread.status)) return "thinking";
   if (thread.status === "failed") return "error";
   if (thread.status === "completed" && timestamp(thread.latestRunCompletedAt) > Math.max(timestamp(thread.lastVisitedAt), readAt)) return "complete";

@@ -87,6 +87,24 @@ test("maps T3 runtime, approval, error, unread and visited states", () => {
   assert.equal(t3VisualStatus(thread("a", { status: "cancelled" })), "idle");
 });
 
+test("a completed parent waiting on subagents or background work stays working, not unread", () => {
+  const waiting = (pendingBackgroundTasks: T3Thread["pendingBackgroundTasks"], status = "completed") =>
+    thread("a", { status, latestRunCompletedAt: at(2), lastVisitedAt: at(1), pendingBackgroundTasks });
+  assert.equal(t3VisualStatus(waiting([{ kind: "subagent" }])), "thinking");
+  assert.equal(t3VisualStatus(waiting([{ kind: "background_task" }])), "thinking");
+  assert.equal(t3VisualStatus(waiting([{ kind: "command", awaited: true }])), "thinking");
+  // Unawaited shell commands and monitors do not hold the parent, matching T3's sidebar.
+  assert.equal(t3VisualStatus(waiting([{ kind: "command" }, { kind: "monitor" }])), "complete");
+  assert.equal(t3VisualStatus(waiting([{ kind: "subagent" }], "failed")), "error");
+  assert.equal(t3VisualStatus(waiting([{ kind: "subagent" }], "completed"), 5000), "thinking");
+});
+
+test("thread parsing keeps only the kind and awaited flag of pending background tasks", () => {
+  const [parsed] = parseT3Threads({ threads: [{ id: "a", title: "a", status: "completed",
+    pendingBackgroundTasks: [{ taskId: "t1", kind: "subagent", description: "secret prompt" }, null, { kind: "command", awaited: true }] }] });
+  assert.deepEqual(parsed.pendingBackgroundTasks, [{ kind: "subagent", awaited: false }, { kind: "command", awaited: true }]);
+});
+
 test("rejects remote endpoints, URL credentials, malformed snapshots and unsafe deep links", () => {
   for (const url of ["https://example.com", "http://192.168.1.2", "http://127.0.0.1@evil.test", "http://u:p@127.0.0.1", "http://127.0.0.1/a", "http://127.0.0.1?token=secret"]) {
     assert.throws(() => t3LocalOrigin(url), /loopback/);
